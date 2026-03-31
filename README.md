@@ -25,8 +25,11 @@ We introduce a framework that automates the transformation of static anime illus
 
 
 <div align="center">
-  <video src="https://github.com/shitagaki-lab/see-through/raw/refs/heads/main/common/assets/trailer.mp4">
-  </video>
+  
+
+https://github.com/user-attachments/assets/023d271f-d8d7-4f6b-9083-96e714fb93e0
+
+
   <br>
   <em>This is our trailer video. Click to play.</em>
 </div>
