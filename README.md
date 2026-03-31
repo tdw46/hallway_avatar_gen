@@ -19,7 +19,7 @@ Conditionally accpted to appear in *ACM SIGGRAPH 2026 Conference Proceedings*.
 
 ## TL;DR
 
-We introduce a framework that automates the transformation of static anime illustrations into manipulatable **2.5D models**. Our approach decomposes a single image into fully inpainted, semantically distinct layers with inferred drawing orders — up to **24 layers** including hair, face, eyes, clothing, accessories, and more.
+We introduce a framework that automates the transformation of static anime illustrations into manipulatable **2.5D models**. Our approach decomposes a single image into fully inpainted, semantically distinct layers with inferred drawing orders — up to **23 layers** including hair, face, eyes, clothing, accessories, and more.
 
 ![Our Representative Image](common/assets/representative.jpg)
 
@@ -95,7 +95,7 @@ ln -sf common/assets assets
 
 `inference_psd.py` runs the full See-through pipeline: it applies the **LayerDiff 3D** model
 for transparent layer generation and the fine-tuned **Marigold** model for pseudo-depth
-inference, then stratifies the character into up to **24 semantic layers** and exports a
+inference, then stratifies the character into up to **23 semantic layers** and exports a
 layered PSD file.
 
 ```bash
@@ -114,7 +114,7 @@ Output is saved to `workspace/layerdiff_output/` by default. Each result include
 - A layered `.psd` file with semantically separated layers
 - Intermediate depth maps and segmentation masks
 
-> **Note:** This uses our most recent model with 24-layer body part separation (V3).
+> **Note:** This uses our most recent model with 23-layer body part separation (V3).
 
 
 Once you have finished the layer splitting, you can further process the PSD with the scripts in `inference/scripts/heuristic_partseg.py` for depth-based or left-right stratification.
