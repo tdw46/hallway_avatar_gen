@@ -155,6 +155,8 @@ We welcome community contributions and third-party integrations!
 
 If you build tools, extensions, or workflows on top of this project, please let us know by opening an issue or pull request — we would be happy to feature your work here.
 
+We also seek for i18n help for this project. Your help will be highly appreciated. 
+
 
 ## Discussion: Is this Image-to-Live2D?
 
