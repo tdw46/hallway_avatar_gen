@@ -27,7 +27,7 @@ VALID_BODY_PARTS_V2 = [
 layerdiff_pipeline: KDiffusionStableDiffusionXLPipeline = None
 def apply_layerdiff(
     imgp: str, pretrained: str, num_inference_steps=30, seed=0, save_dir='workspace/layerdiff_output', target_tag_list=VALID_BODY_PARTS_V2, 
-    resolution=1280, vae_ckpt=None, unet_ckpt=None):
+    resolution=1280, vae_ckpt=None, unet_ckpt=None, disable_progressbar=False):
     
     global layerdiff_pipeline
     if layerdiff_pipeline is None:
@@ -68,6 +68,7 @@ def apply_layerdiff(
         layerdiff_pipeline.text_encoder_2.to(dtype=torch.bfloat16, device='cuda')
 
     pipeline = layerdiff_pipeline
+    pipeline.set_progress_bar_config(disable=disable_progressbar)
 
     saved = osp.join(save_dir, osp.splitext(osp.basename(imgp))[0])
     os.makedirs(saved, exist_ok=True)
@@ -180,13 +181,14 @@ def apply_layerdiff(
 
 
 marigold_pipeline: MarigoldDepthPipeline = None
-def apply_marigold(srcp, pretrained: str, num_inference_steps=30, seed=0, save_dir='workspace/layerdiff_output', target_tag_list=VALID_BODY_PARTS_V2, resolution=1280, normalize_depth=False):
+def apply_marigold(srcp, pretrained: str, num_inference_steps=30, seed=0, save_dir='workspace/layerdiff_output', target_tag_list=VALID_BODY_PARTS_V2, resolution=1280, normalize_depth=False, disable_progressbar=False):
     global marigold_pipeline
     if marigold_pipeline is None:
         unet = UNetFrameConditionModel.from_pretrained(pretrained, subfolder='unet')
         marigold_pipeline = MarigoldDepthPipeline.from_pretrained(pretrained, unet=unet)
         marigold_pipeline.to(device='cuda', dtype=torch.bfloat16)
     pipe = marigold_pipeline
+    pipe.set_progress_bar_config(disable=disable_progressbar)
 
     srcname = osp.basename(osp.splitext(srcp)[0])
     img_list = []
@@ -240,7 +242,6 @@ def apply_marigold(srcp, pretrained: str, num_inference_steps=30, seed=0, save_d
     pipe_out = pipe(
         # tensor2img(img, 'pil', denormalize=True, mean=127.5, std=127.5),
         color_map=None,
-        show_progress_bar=False,
         img_list = img_list
     )
     depth_pred: np.ndarray = pipe_out.depth_tensor

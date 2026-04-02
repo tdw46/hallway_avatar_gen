@@ -322,41 +322,45 @@ class KDiffusionStableDiffusionXLPipeline(StableDiffusionXLImg2ImgPipeline):
 
         latents = noise * self.scheduler.init_noise_sigma
 
-        for i, t in enumerate(timesteps):
+        with self.progress_bar(total=num_inference_steps) as progress_bar:
+            for i, t in enumerate(timesteps):
 
-            # expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+                # expand the latents if we are doing classifier free guidance
+                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
 
-            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-            # predict the noise residual
-            added_cond_kwargs = {"text_embeds": pooled_prompt_embeds, "time_ids": add_time_ids}
+                # predict the noise residual
+                added_cond_kwargs = {"text_embeds": pooled_prompt_embeds, "time_ids": add_time_ids}
 
-            noise_pred = self.unet(
-                torch.cat([latent_model_input, c_concat], dim=-3),
-                t,
-                encoder_hidden_states=prompt_embeds,
-                added_cond_kwargs=added_cond_kwargs,
-                return_dict=False,
-                group_index=group_index
-            )[0]
+                noise_pred = self.unet(
+                    torch.cat([latent_model_input, c_concat], dim=-3),
+                    t,
+                    encoder_hidden_states=prompt_embeds,
+                    added_cond_kwargs=added_cond_kwargs,
+                    return_dict=False,
+                    group_index=group_index
+                )[0]
 
-            # perform guidance
-            if self.do_classifier_free_guidance:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                # perform guidance
+                if self.do_classifier_free_guidance:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-            if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                # Based on 3.4. in https://huggingface.co/papers/2305.08891
-                noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
+                if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                    # Based on 3.4. in https://huggingface.co/papers/2305.08891
+                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
 
-            # compute the previous noisy sample x_t -> x_t-1
-            latents_dtype = latents.dtype
-            latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-            if latents.dtype != latents_dtype:
-                if torch.backends.mps.is_available():
-                    # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
-                    latents = latents.to(latents_dtype)
+                # compute the previous noisy sample x_t -> x_t-1
+                latents_dtype = latents.dtype
+                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    if torch.backends.mps.is_available():
+                        # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
+                        latents = latents.to(latents_dtype)
+
+                if i == len(timesteps) - 1 or (i + 1) % self.scheduler.order == 0:
+                    progress_bar.update()
 
 
         if latents.ndim == 5:
@@ -371,7 +375,6 @@ class KDiffusionStableDiffusionXLPipeline(StableDiffusionXLImg2ImgPipeline):
         res_list = []
         for latent in latents:
             latent = latent[None]
-            # latent = scheduler.add_noise(latent, torch.randn_like(latent), timesteps=torch.tensor([1], device=latent.device))
             result_list, vis_list_batch = self.trans_vae.decoder(self.vae, latent, mask=page_alpha)
             vis_list += vis_list_batch
             res_list += result_list

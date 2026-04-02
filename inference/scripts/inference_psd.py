@@ -12,7 +12,7 @@ os.environ['OMP_NUM_THREADS'] = f"{default_n_threads}"
 import numpy as np
 from tqdm import tqdm
 
-from utils.io_utils import json2dict, dict2json, load_img_depth, save_psd, find_all_imgs
+from utils.io_utils import find_all_imgs
 from utils import inference_utils
 from utils.inference_utils import apply_layerdiff, apply_marigold, further_extr
 from utils.torch_utils import seed_everything
@@ -30,6 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--resolution', default=1280)
     parser.add_argument('--save_to_psd', action='store_true')
     parser.add_argument('--tblr_split', action='store_true', help='try split parts (handwear, eyes, etc) into left-right components')
+    parser.add_argument('--disable_progressbar', action='store_true', help='hide progressbar')
     args = parser.parse_args()
     srcp = args.srcp
 
@@ -43,10 +44,10 @@ if __name__ == '__main__':
         seed_everything(args.seed)
 
         print('running layerdiff...')
-        apply_layerdiff(srcp, args.repo_id_layerdiff, save_dir=args.save_dir, seed=args.seed, vae_ckpt=args.vae_ckpt, unet_ckpt=args.unet_ckpt, resolution=args.resolution)
+        apply_layerdiff(srcp, args.repo_id_layerdiff, save_dir=args.save_dir, seed=args.seed, vae_ckpt=args.vae_ckpt, unet_ckpt=args.unet_ckpt, resolution=args.resolution, disable_progressbar=args.disable_progressbar)
         
         print('running marigold...')
-        apply_marigold(srcp, args.repo_id_depth, save_dir=args.save_dir, seed=args.seed)
+        apply_marigold(srcp, args.repo_id_depth, save_dir=args.save_dir, seed=args.seed, disable_progressbar=args.disable_progressbar)
 
         srcname = osp.basename(osp.splitext(srcp)[0])
         saved = osp.join(args.save_dir, srcname)

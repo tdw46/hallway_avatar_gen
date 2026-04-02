@@ -258,7 +258,6 @@ class MarigoldDepthPipeline(DiffusionPipeline):
         batch_size: int = 0,
         generator: Union[torch.Generator, None] = None,
         color_map: str = "Spectral",
-        show_progress_bar: bool = True,
         ensemble_kwargs: Dict = None,
         img_list=None,
         **kwargs
@@ -289,8 +288,6 @@ class MarigoldDepthPipeline(DiffusionPipeline):
                 If set to 0, the script will automatically decide the proper batch size.
             generator (`torch.Generator`, *optional*, defaults to `None`)
                 Random generator for initial noise generation.
-            show_progress_bar (`bool`, *optional*, defaults to `True`):
-                Display a progress bar of diffusion denoising.
             color_map (`str`, *optional*, defaults to `"Spectral"`, pass `None` to skip colorized depth map generation):
                 Colormap used to colorize the depth map.
             scale_invariant (`str`, *optional*, defaults to `True`):
@@ -394,12 +391,8 @@ class MarigoldDepthPipeline(DiffusionPipeline):
 
         # Predict depth maps (batched)
         target_pred_ls = []
-        if show_progress_bar:
-            iterable = tqdm(
-                single_rgb_loader, desc=" " * 2 + "Inference batches", leave=False
-            )
-        else:
-            iterable = single_rgb_loader
+
+        iterable = single_rgb_loader
         for batch in iterable:
             if not is_3d:
                 (batched_img,) = batch
@@ -408,7 +401,6 @@ class MarigoldDepthPipeline(DiffusionPipeline):
             target_pred_raw = self.single_infer(
                 cond_latent=batched_img,
                 num_inference_steps=denoising_steps,
-                show_pbar=show_progress_bar,
                 generator=generator,
             )
             target_pred_ls.append(target_pred_raw.detach())
@@ -526,7 +518,6 @@ class MarigoldDepthPipeline(DiffusionPipeline):
         cond_latent: torch.Tensor,
         num_inference_steps: int,
         generator: Union[torch.Generator, None],
-        show_pbar: bool,
     ) -> torch.Tensor:
         """
         Perform a single prediction without ensembling.
@@ -536,8 +527,6 @@ class MarigoldDepthPipeline(DiffusionPipeline):
                 Input RGB image.
             num_inference_steps (`int`):
                 Number of diffusion denoisign steps (DDIM) during inference.
-            show_pbar (`bool`):
-                Display a progress bar of diffusion denoising.
             generator (`torch.Generator`)
                 Random generator for initial noise generation.
         Returns:
@@ -571,38 +560,31 @@ class MarigoldDepthPipeline(DiffusionPipeline):
             (b, 1, 1)
         ).to(device)  # [B, 2, 1024]
 
-        # Denoising loop
-        if show_pbar:
-            iterable = tqdm(
-                enumerate(timesteps),
-                total=len(timesteps),
-                leave=False,
-                desc=" " * 4 + "Diffusion denoising",
-            )
-        else:
-            iterable = enumerate(timesteps)
+        iterable = enumerate(timesteps)
 
         batch_empty_text_embed = batch_empty_text_embed.to(device=target_latent.device, dtype=target_latent.dtype)
-        for i, t in iterable:
-            unet_input = torch.cat(
-                [cond_latent, target_latent], dim=1
-            )  # this order is important
+        with self.progress_bar(total=num_inference_steps) as progress_bar:
+            for i, t in iterable:
+                unet_input = torch.cat(
+                    [cond_latent, target_latent], dim=1
+                )  # this order is important
 
-            if is_3d:
-                unet_input = unet_input[None]
-        
-            # predict the noise residual
-            noise_pred = self.unet(
-                unet_input, t, encoder_hidden_states=batch_empty_text_embed
-            ).sample  # [B, 4, h, w]
+                if is_3d:
+                    unet_input = unet_input[None]
+            
+                # predict the noise residual
+                noise_pred = self.unet(
+                    unet_input, t, encoder_hidden_states=batch_empty_text_embed
+                ).sample  # [B, 4, h, w]
 
-            if is_3d:
-                noise_pred = noise_pred[0]
+                if is_3d:
+                    noise_pred = noise_pred[0]
 
-            # compute the previous noisy sample x_t -> x_t-1
-            target_latent = self.scheduler.step(
-                noise_pred, t, target_latent, generator=generator
-            ).prev_sample
+                # compute the previous noisy sample x_t -> x_t-1
+                target_latent = self.scheduler.step(
+                    noise_pred, t, target_latent, generator=generator
+                ).prev_sample
+                progress_bar.update()
 
         if is_3d:
             depth = torch.cat([self.decode_depth(t[None]) for t in target_latent])
