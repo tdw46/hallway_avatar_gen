@@ -88,7 +88,16 @@ ln -sf common/assets assets
 |----------|-------------|
 | `inference/demo/bodypartseg_sam.ipynb` | Interactive body part segmentation demo with visualization (19-parts) |
 
-> For the definition of complete body tags, refer to [scrap_model.py](./common/live2d/scrap_model.py). 
+> For the definition of complete body tags, refer to [scrap_model.py](./common/live2d/scrap_model.py).
+
+### Huggingface Space
+
+We have prepared [a Huggingface Space](https://huggingface.co/spaces/24yearsold/see-through-demo) with ZeroGPU, so that if you register with HuggingFace, you should be able to run 1-2 PSD extractions per day (approximately 2-3 mins each, at 1280 resolution).
+
+<img alt="image" src="https://github.com/user-attachments/assets/3f98f47b-e98b-4628-9859-8772cda69f93" />
+
+(Copyright [Tohoku Zunko Project](https://zunko.jp/)).
+
 
 ## Usage
 
@@ -97,7 +106,8 @@ ln -sf common/assets assets
 `inference_psd.py` runs the full See-through pipeline: it applies the **LayerDiff 3D** model
 for transparent layer generation and the fine-tuned **Marigold** model for pseudo-depth
 inference, then stratifies the character into up to **23 semantic layers** and exports a
-layered PSD file.
+layered PSD file. Note that the separation for head and body are in two continuous stages, which
+may lead to a longer time than the original model mentioned in the paper. 
 
 ```bash
 # Decompose a single image into a layered PSD
