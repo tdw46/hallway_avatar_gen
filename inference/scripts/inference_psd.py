@@ -28,12 +28,13 @@ if __name__ == '__main__':
     parser.add_argument('--vae_ckpt', default=None)
     parser.add_argument('--unet_ckpt', default=None)
     parser.add_argument('--resolution', default=1280, help="inference resolution of layerdiff")
-    parser.add_argument('--resolution_depth', type=int, default=-1, help="inference resolution of depth model, setting it to -1 will align with layerdiff")
+    parser.add_argument('--resolution_depth', type=int, default=720, help="inference resolution of depth model, setting it to -1 will align with layerdiff")
     parser.add_argument('--inference_steps', type=int, default=30, help="inference steps of layerdiff")
     parser.add_argument('--inference_steps_depth', type=int, default=-1, help="inference steps of depth model")
     parser.add_argument('--save_to_psd', action='store_true')
     parser.add_argument('--tblr_split', action='store_true', help='try split parts (handwear, eyes, etc) into left-right components')
     parser.add_argument('--disable_progressbar', action='store_true', help='hide progressbar')
+    parser.add_argument('--group_offload', action='store_true')
     args = parser.parse_args()
     srcp = args.srcp
 
@@ -48,13 +49,11 @@ if __name__ == '__main__':
 
         print('running layerdiff...')
         apply_layerdiff(srcp, args.repo_id_layerdiff, save_dir=args.save_dir, seed=args.seed, vae_ckpt=args.vae_ckpt, unet_ckpt=args.unet_ckpt, \
-            resolution=args.resolution, disable_progressbar=args.disable_progressbar, num_inference_steps=args.inference_steps)
-        
-        torch.cuda.empty_cache()
+            resolution=args.resolution, disable_progressbar=args.disable_progressbar, num_inference_steps=args.inference_steps, group_offload=args.group_offload)
 
         print('running marigold...')
         apply_marigold(srcp, args.repo_id_depth, save_dir=args.save_dir, seed=args.seed, disable_progressbar=args.disable_progressbar, \
-            resolution=args.resolution_depth, num_inference_steps=args.inference_steps_depth)
+            resolution=args.resolution_depth, num_inference_steps=args.inference_steps_depth, group_offload=args.group_offload)
 
         srcname = osp.basename(osp.splitext(srcp)[0])
         saved = osp.join(args.save_dir, srcname)
