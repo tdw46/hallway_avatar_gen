@@ -1,175 +1,172 @@
-"""See-through WebUI — アニメイラスト レイヤー分解 Gradio インターフェース
+"""Hallway Avatar Gen web UI.
 
-New file added to See-through (https://github.com/shitagaki-lab/see-through).
-Licensed under Apache License 2.0.
+This keeps the original Gradio-based workflow, but is now designed to be hosted
+inside a native pywebview shell launched from Blender.
 """
 
+from __future__ import annotations
+
+import json
 import os
-import sys
 import re
-import time
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import gradio as gr
 from PIL import Image
 
-# --- Paths ---
+
 SEETHROUGH_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = SEETHROUGH_ROOT / "inference" / "scripts" / "inference_psd_quantized.py"
-HF_CACHE_DIR = SEETHROUGH_ROOT / ".hf_cache"
-OUTPUT_BASE = SEETHROUGH_ROOT / "workspace" / "webui_output"
+HF_CACHE_DIR = Path(os.environ.get("HAG_HF_HOME", SEETHROUGH_ROOT / ".hf_cache"))
+OUTPUT_BASE = Path(os.environ.get("HAG_OUTPUT_DIR", SEETHROUGH_ROOT / "workspace" / "webui_output"))
+JOB_QUEUE_DIR = Path(os.environ.get("HAG_JOB_QUEUE_DIR", ""))
 
 SKIP_TAGS = {"src_img", "src_head", "reconstruction"}
 
 LAYER_ORDER = [
-    "front hair", "back hair", "head", "neck", "neckwear",
-    "topwear", "handwear", "bottomwear", "legwear", "footwear",
-    "tail", "wings", "objects",
-    "headwear", "face", "irides", "eyebrow", "eyewhite",
-    "eyelash", "eyewear", "ears", "earwear", "nose", "mouth",
+    "front hair",
+    "back hair",
+    "head",
+    "neck",
+    "neckwear",
+    "topwear",
+    "handwear",
+    "bottomwear",
+    "legwear",
+    "footwear",
+    "tail",
+    "wings",
+    "objects",
+    "headwear",
+    "face",
+    "irides",
+    "eyebrow",
+    "eyewhite",
+    "eyelash",
+    "eyewear",
+    "ears",
+    "earwear",
+    "nose",
+    "mouth",
 ]
 
-# --- Stage detection for log parsing ---
 STAGE_MARKERS = [
-    ("Quantized inference:", "📋 推論設定"),
-    ("Building LayerDiff", "🔨 LayerDiffパイプライン構築中..."),
-    ("[NF4 fix]", "🔧 NF4テキストエンコーダ修正中..."),
-    ("Running LayerDiff", "🎨 LayerDiff推論中 (body + head)..."),
-    ("LayerDiff3D done", "✅ LayerDiff完了"),
-    ("layerdiff pipeline freed", "♻️ VRAM解放中..."),
-    ("Building Marigold", "🔨 Marigoldパイプライン構築中..."),
-    ("Running Marigold", "🏔️ Marigold depth推論中..."),
-    ("Marigold done", "✅ Marigold完了"),
-    ("Running PSD assembly", "📦 PSD組み立て中..."),
-    ("PSD assembly done", "✅ PSD完了"),
+    ("Quantized inference:", "Preparing inference"),
+    ("Building LayerDiff", "Building LayerDiff pipeline"),
+    ("[NF4 fix]", "Applying NF4 compatibility fix"),
+    ("Running LayerDiff", "Running layer decomposition"),
+    ("LayerDiff3D done", "Layer decomposition complete"),
+    ("Building Marigold", "Building depth pipeline"),
+    ("Running Marigold", "Estimating depth"),
+    ("Marigold done", "Depth estimation complete"),
+    ("Running PSD assembly", "Assembling PSD and per-layer crops"),
+    ("PSD assembly done", "PSD assembly complete"),
 ]
 
 
-def _tag_sort_key(tag):
+def _tag_sort_key(tag: str) -> int:
     try:
         return LAYER_ORDER.index(tag)
     except ValueError:
         return len(LAYER_ORDER)
 
 
-def collect_layers(output_dir):
-    """Collect layer PNGs as (filepath, label) tuples for the gallery."""
-    if not os.path.isdir(output_dir):
+def _job_payload(run_id: str, *, status: str, save_dir: Path, layer_dir: Path, error: str = "") -> None:
+    if not str(JOB_QUEUE_DIR):
+        return
+    JOB_QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "job_id": run_id,
+        "status": status,
+        "save_dir": str(save_dir),
+        "layer_dir": str(layer_dir),
+        "error": error,
+    }
+    (JOB_QUEUE_DIR / f"{run_id}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def collect_layers(output_dir: str | os.PathLike[str]) -> list[tuple[str, str]]:
+    output_path = Path(output_dir)
+    if not output_path.is_dir():
         return []
-    layers = []
-    for f in os.listdir(output_dir):
-        if not f.endswith(".png"):
+    layers: list[tuple[str, str]] = []
+    for file_path in output_path.iterdir():
+        if file_path.suffix.lower() != ".png":
             continue
-        tag = f[:-4]
+        tag = file_path.stem
         if tag.endswith("_depth") or tag in SKIP_TAGS:
             continue
-        layers.append((os.path.join(output_dir, f), tag))
-    layers.sort(key=lambda x: _tag_sort_key(x[1]))
+        layers.append((str(file_path), tag))
+    layers.sort(key=lambda item: _tag_sort_key(item[1]))
     return layers
 
 
-def parse_log_status(log_path):
-    """Parse log file tail to extract current stage and progress bar."""
-    if not os.path.exists(log_path):
-        return "⏳ モデル初期化中...（初回は数分かかることがあります）"
+def parse_log_status(log_path: str | os.PathLike[str]) -> str:
+    path = Path(log_path)
+    if not path.exists():
+        return "Initializing models"
 
     try:
-        size = os.path.getsize(log_path)
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            f.seek(max(0, size - 6000))
-            tail = f.read()
+        size = path.stat().st_size
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            handle.seek(max(0, size - 6000))
+            tail = handle.read()
     except Exception:
-        return "⏳ モデル初期化中..."
+        return "Initializing models"
 
-    # Strip ANSI escape codes
     tail = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", tail)
-
-    # Detect current stage (last match wins)
-    current_stage = "⏳ モデル初期化中...（初回は数分かかることがあります）"
+    current_stage = "Initializing models"
     for keyword, label in STAGE_MARKERS:
         if keyword in tail:
             current_stage = label
 
-    # Extract latest tqdm / loading progress from \r-delimited segments
     progress_line = ""
-    parts = tail.split("\r")
-    for part in reversed(parts):
+    for part in reversed(tail.split("\r")):
         part = part.strip()
         if not part:
             continue
-
-        # tqdm diffusion steps: " 50%|█████     | 15/30 [01:38<01:40, 6.69s/it]"
-        m = re.search(
-            r"(\d+)%\|([^|]+)\|\s*(\d+)/(\d+)\s*\[([^\]]+)\]", part
-        )
-        if m:
-            pct, bar, cur, total, timing = m.groups()
+        match = re.search(r"(\d+)%\|([^|]+)\|\s*(\d+)/(\d+)\s*\[([^\]]+)\]", part)
+        if match:
+            pct, bar, cur, total, timing = match.groups()
             progress_line = f"{pct}% |{bar.strip()}| {cur}/{total} [{timing}]"
             break
 
-        # Loading weights / pipeline components
-        m = re.search(r"Loading (\w+).*?(\d+)%\|([^|]+)\|\s*(\d+)/(\d+)", part)
-        if m:
-            what, pct, bar, cur, total = m.groups()
-            label = "ウェイトロード" if what == "weights" else "パイプラインロード"
-            progress_line = f"{label}: {pct}% |{bar.strip()}| {cur}/{total}"
-            break
-
-    if progress_line:
-        return f"{current_stage}\n{progress_line}"
-    return current_stage
+    return f"{current_stage}\n{progress_line}" if progress_line else current_stage
 
 
-def open_output_folder(output_path):
-    """Open the output folder in Windows Explorer."""
-    target = output_path if output_path and os.path.isdir(output_path) else str(OUTPUT_BASE)
-    os.makedirs(target, exist_ok=True)
-    os.startfile(target)
+def open_output_folder(output_path: str) -> None:
+    target = Path(output_path) if output_path else OUTPUT_BASE
+    target.mkdir(parents=True, exist_ok=True)
+    if sys.platform.startswith("darwin"):
+        subprocess.Popen(["open", str(target)])
+    elif os.name == "nt":
+        os.startfile(str(target))
+    else:
+        subprocess.Popen(["xdg-open", str(target)])
 
 
-def get_vram_used_mb():
-    """Get total VRAM used in MB via nvidia-smi."""
-    try:
-        r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3,
-        )
-        if r.returncode == 0:
-            used, total = r.stdout.strip().split(", ")
-            return int(used), int(total)
-    except Exception:
-        pass
-    return 0, 0
+def _resolve_quant_mode(mode_str: str) -> str:
+    if mode_str.startswith("NF4"):
+        return "nf4"
+    if mode_str.startswith("Full"):
+        return "none"
+    return os.environ.get("HAG_DEFAULT_QUANT_MODE", "auto")
 
 
-def get_vram_display(baseline_mb):
-    """Show VRAM usage: See-through delta + total."""
-    used, total = get_vram_used_mb()
-    if total == 0:
-        return ""
-    st_vram = max(0, used - baseline_mb)
-    return f"🔍 See-through: ~{st_vram}MB | 全体: {used}/{total}MB"
-
-
-def run_inference(image_path, mode_str, resolution, seed_val, tblr_split):
-    """Run See-through inference. Generator that yields progressive updates."""
+def run_inference(image_path, mode_str, device, resolution, seed_val, tblr_split):
     if image_path is None:
-        raise gr.Error("画像をアップロードしてください")
+        raise gr.Error("Upload an image first.")
 
-    # --- Setup ---
     seed_val = int(seed_val)
     resolution = int(resolution)
-    # Snap to nearest 64
     resolution = max(512, min(2048, round(resolution / 64) * 64))
-    is_nf4 = "NF4" in mode_str
+    quant_mode = _resolve_quant_mode(mode_str)
     img_stem = Path(image_path).stem
 
-    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in img_stem)
-    if not safe_name:
-        safe_name = "image"
-
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in img_stem) or "image"
     run_id = f"{safe_name}_{int(time.time())}"
     save_dir = OUTPUT_BASE / run_id
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -177,104 +174,88 @@ def run_inference(image_path, mode_str, resolution, seed_val, tblr_split):
     input_path = save_dir / f"{safe_name}.png"
     Image.open(image_path).convert("RGBA").save(str(input_path))
 
-    layer_dir = str(save_dir / safe_name)
+    layer_dir = save_dir / safe_name
     log_path = save_dir / "webui.log"
+    _job_payload(run_id, status="running", save_dir=save_dir, layer_dir=layer_dir)
 
-    yield [], str(save_dir), "⏳ 推論を開始します..."
+    yield [], str(save_dir), "Starting inference"
 
-    # --- Build command ---
-    cmd = [
-        sys.executable, str(SCRIPT_PATH),
-        "--srcp", str(input_path),
+    command = [
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--srcp",
+        str(input_path),
         "--save_to_psd",
-        "--save_dir", str(save_dir),
-        "--seed", str(seed_val),
-        "--resolution", str(resolution),
-        "--quant_mode", "nf4" if is_nf4 else "none",
+        "--save_dir",
+        str(save_dir),
+        "--seed",
+        str(seed_val),
+        "--resolution",
+        str(resolution),
+        "--quant_mode",
+        quant_mode,
+        "--device",
+        device,
         "--no_group_offload",
     ]
     if not tblr_split:
-        cmd.append("--no_tblr_split")
+        command.append("--no_tblr_split")
 
-    env = {**os.environ, "HF_HOME": str(HF_CACHE_DIR)}
+    env = dict(os.environ)
+    env["HF_HOME"] = str(HF_CACHE_DIR)
     start_time = time.time()
 
-    # Record baseline VRAM for tracking
-    baseline_vram, _ = get_vram_used_mb()
-
-    # --- Run subprocess ---
-    with open(log_path, "w", encoding="utf-8") as log_file:
-        proc = subprocess.Popen(
-            cmd,
+    with log_path.open("w", encoding="utf-8") as log_file:
+        process = subprocess.Popen(
+            command,
             cwd=str(SEETHROUGH_ROOT),
             stdout=log_file,
             stderr=subprocess.STDOUT,
             env=env,
         )
 
-        while proc.poll() is None:
+        while process.poll() is None:
             time.sleep(2)
             layers = collect_layers(layer_dir)
             elapsed = time.time() - start_time
             elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
-
-            # Parse log for detailed status
-            log_status = parse_log_status(str(log_path))
-            vram = get_vram_display(baseline_vram)
-            status_text = f"{log_status}\n⏱️ 経過時間: {elapsed_str}"
+            log_status = parse_log_status(log_path)
+            status_text = f"{log_status}\nElapsed: {elapsed_str}"
             if layers:
-                status_text += f" | レイヤー: {len(layers)}枚"
-            if vram:
-                status_text += f"\n{vram}"
-
+                status_text += f"\nLayers ready: {len(layers)}"
             yield layers, str(save_dir), status_text
 
-    # --- Check result ---
-    if proc.returncode != 0:
-        err_tail = ""
-        if log_path.exists():
-            err_tail = log_path.read_text(encoding="utf-8")[-500:]
-        raise gr.Error(f"推論失敗 (exit code: {proc.returncode})\n{err_tail}")
+    if process.returncode != 0:
+        err_tail = log_path.read_text(encoding="utf-8", errors="ignore")[-1000:] if log_path.exists() else ""
+        _job_payload(run_id, status="failed", save_dir=save_dir, layer_dir=layer_dir, error=err_tail)
+        raise gr.Error(f"Inference failed.\n{err_tail}")
 
-    # --- Final results ---
     gallery = collect_layers(layer_dir)
     elapsed = time.time() - start_time
-    minutes = int(elapsed // 60)
-    seconds = int(elapsed % 60)
-    mode_label = "NF4" if is_nf4 else "Full bf16"
-
-    # Count PSD files
-    psd_count = sum(
-        1 for f in os.listdir(str(save_dir))
-        if f.endswith(".psd")
-    ) if save_dir.exists() else 0
-
-    # Read peak VRAM from stats.json
-    import json as _json
-    peak_vram_str = ""
-    stats_path = save_dir / safe_name / "stats.json"
+    stats_path = layer_dir / "stats.json"
+    stats_data = {}
     if stats_path.exists():
         try:
-            with open(stats_path, "r") as sf:
-                stats_data = _json.load(sf)
-            peak_gb = stats_data.get("peak_vram_gb", 0)
-            peak_vram_str = f" | ピークVRAM: {peak_gb:.1f}GB"
+            stats_data = json.loads(stats_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            stats_data = {}
+
+    peak_note = ""
+    peak_gb = stats_data.get("peak_vram_gb")
+    if peak_gb:
+        peak_note = f" | Peak memory: {peak_gb:.2f} GB"
+
+    _job_payload(run_id, status="completed", save_dir=save_dir, layer_dir=layer_dir)
 
     status = (
-        f"✅ 完了！ ({minutes}分{seconds}秒)\n"
-        f"モード: {mode_label} | 解像度: {resolution} | "
-        f"レイヤー: {len(gallery)}枚 | PSD: {psd_count}個{peak_vram_str}\n"
-        f"📂 出力先: {save_dir}"
+        f"Completed in {int(elapsed // 60)}m {int(elapsed % 60)}s\n"
+        f"Device: {stats_data.get('device', device)} | Quant: {stats_data.get('quant_mode', quant_mode)}"
+        f"{peak_note}\nOutput: {save_dir}"
     )
-
     yield gallery, str(save_dir), status
 
 
-# --- Custom CSS ---
 CUSTOM_CSS = """
-/* Checkerboard for transparent layer previews */
 .gallery-item img,
 div[data-testid="image"] img {
     background-image:
@@ -294,105 +275,102 @@ div[data-testid="image"] img {
 }
 """
 
-# --- Theme: Anima-style warm orange on off-white ---
 theme = gr.themes.Soft(
     primary_hue=gr.themes.Color(
-        c50="#fef7f0", c100="#fde8d4", c200="#fbd0a8",
-        c300="#f5b47a", c400="#f0a050", c500="#e8985a",
-        c600="#d88a4e", c700="#c07838", c800="#a0632e",
-        c900="#7a4c24", c950="#5a3818",
+        c50="#fef7f0",
+        c100="#fde8d4",
+        c200="#fbd0a8",
+        c300="#f5b47a",
+        c400="#f0a050",
+        c500="#e8985a",
+        c600="#d88a4e",
+        c700="#c07838",
+        c800="#a0632e",
+        c900="#7a4c24",
+        c950="#5a3818",
     ),
     secondary_hue="orange",
     neutral_hue=gr.themes.Color(
-        c50="#f9f9f7", c100="#f3f3f0", c200="#ededea",
-        c300="#d8d8d5", c400="#b0b0ad", c500="#9090a0",
-        c600="#5c5c72", c700="#4a4a5e", c800="#2d2d3a",
-        c900="#1e1e28", c950="#141420",
+        c50="#f9f9f7",
+        c100="#f3f3f0",
+        c200="#ededea",
+        c300="#d8d8d5",
+        c400="#b0b0ad",
+        c500="#9090a0",
+        c600="#5c5c72",
+        c700="#4a4a5e",
+        c800="#2d2d3a",
+        c900="#1e1e28",
+        c950="#141420",
     ),
-    font=[gr.themes.GoogleFont("Inter"), gr.themes.GoogleFont("Noto Sans JP"), "system-ui", "sans-serif"],
+    font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
     font_mono=["Consolas", "Fira Code", "monospace"],
 )
 
-# --- Build UI ---
-with gr.Blocks(title="See-through WebUI") as demo:
 
-    # State: output folder path
-    output_path_state = gr.State(value="")
+def build_demo():
+    with gr.Blocks(title="Hallway Avatar Gen") as demo:
+        output_path_state = gr.State(value="")
 
-    gr.Markdown(
-        "# 🔍 See-through — アニメイラスト レイヤー分解\n"
-        "アニメイラスト1枚から最大23レイヤーのセマンティック分解を行います。\n"
-        "[GitHub](https://github.com/shitagaki-lab/see-through) | "
-        "[論文](https://arxiv.org/abs/2602.03749) | "
-        "SIGGRAPH 2026",
-        elem_classes=["header-text"],
-    )
+        gr.Markdown(
+            "# Hallway Avatar Gen\n"
+            "Run the See-through layer decomposition pipeline in a Blender-friendly native window.",
+            elem_classes=["header-text"],
+        )
 
-    with gr.Row():
-        # --- Left: Settings ---
-        with gr.Column(scale=1, min_width=320):
-            input_image = gr.Image(type="filepath", label="入力画像", height=350)
-
-            with gr.Group():
+        with gr.Row():
+            with gr.Column(scale=1, min_width=320):
+                input_image = gr.Image(type="filepath", label="Input Image", height=350)
                 mode = gr.Radio(
                     choices=[
-                        "NF4 量子化 (推奨・VRAM ~10GB)",
-                        "Full bf16 (高品質・VRAM ~14GB)",
+                        "Auto (recommended)",
+                        "NF4 4-bit (CUDA only)",
+                        "Full precision",
                     ],
-                    value="NF4 量子化 (推奨・VRAM ~10GB)",
-                    label="推論モード",
+                    value="Auto (recommended)",
+                    label="Inference Mode",
+                )
+                device = gr.Dropdown(
+                    choices=["auto", "cuda", "mps", "cpu"],
+                    value=os.environ.get("HAG_DEFAULT_DEVICE", "auto"),
+                    label="Device",
                 )
                 resolution = gr.Slider(
-                    minimum=512, maximum=2048, step=64, value=1024,
-                    label="解像度",
-                    info="512: ~4GB / 768: ~5GB / 1024: ~7GB / 1280: ~9GB (NF4)",
+                    minimum=512,
+                    maximum=2048,
+                    step=64,
+                    value=int(os.environ.get("HAG_DEFAULT_RESOLUTION", "1024")),
+                    label="Resolution",
                 )
                 with gr.Row():
-                    seed = gr.Number(value=42, label="シード値", precision=0, minimum=0)
-                    tblr_split = gr.Checkbox(
-                        value=True, label="左右分割",
-                        info="手・目などを左右に分離",
-                    )
+                    seed = gr.Number(value=42, label="Seed", precision=0, minimum=0)
+                    tblr_split = gr.Checkbox(value=True, label="Split Left / Right")
 
-        # --- Right: Gallery + Actions ---
-        with gr.Column(scale=2):
-            gallery = gr.Gallery(
-                label="レイヤープレビュー", columns=4,
-                height="auto", object_fit="contain",
-            )
+            with gr.Column(scale=2):
+                gallery = gr.Gallery(
+                    label="Layer Preview",
+                    columns=4,
+                    height="auto",
+                    object_fit="contain",
+                )
+                run_btn = gr.Button("Decompose", variant="primary", size="lg")
+                status = gr.Textbox(label="Status", interactive=False, lines=4, elem_id="status-box")
+                open_folder_btn = gr.Button("Open Output Folder", size="sm")
 
-            run_btn = gr.Button("🚀 分解開始", variant="primary", size="lg")
+        run_btn.click(
+            fn=run_inference,
+            inputs=[input_image, mode, device, resolution, seed, tblr_split],
+            outputs=[gallery, output_path_state, status],
+        )
+        open_folder_btn.click(fn=open_output_folder, inputs=[output_path_state])
 
-            status = gr.Textbox(
-                label="ステータス", interactive=False, lines=4,
-                elem_id="status-box",
-            )
-
-            open_folder_btn = gr.Button("📂 出力フォルダを開く", size="sm")
-
-    gr.Markdown(
-        "---\n"
-        "**出力先**: `workspace/webui_output/` | "
-        "**推論時間の目安**: NF4 ~7分, Full ~7分 (RTX 3090)",
-        elem_classes=["header-text"],
-    )
-
-    # --- Events ---
-    run_btn.click(
-        fn=run_inference,
-        inputs=[input_image, mode, resolution, seed, tblr_split],
-        outputs=[gallery, output_path_state, status],
-    )
-
-    open_folder_btn.click(
-        fn=open_output_folder,
-        inputs=[output_path_state],
-    )
+    return demo
 
 
 if __name__ == "__main__":
-    demo.queue()
-    demo.launch(
-        inbrowser=True, server_name="127.0.0.1",
-        css=CUSTOM_CSS, theme=theme,
+    build_demo().queue().launch(
+        inbrowser=bool(os.environ.get("HAG_OPEN_BROWSER")),
+        server_name="127.0.0.1",
+        css=CUSTOM_CSS,
+        theme=theme,
     )

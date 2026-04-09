@@ -1,0 +1,58 @@
+schema_version = "1.0.0"
+
+id = "hallway_avatar_gen"
+version = "0.1.0"
+name = "Hallway Avatar Gen"
+tagline = "Native web UI for avatar layer decomposition in the 3D Viewport"
+maintainer = "Tyler Walker"
+type = "add-on"
+
+website = "https://github.com/shitagaki-lab/see-through"
+
+tags = ["Animation", "Compositing", "Pipeline"]
+
+blender_version_min = "5.0.0"
+
+license = ["SPDX:Apache-2.0"]
+
+copyright = [
+  "2026 Tyler Walker",
+]
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".mypy_cache/",
+  ".pytest_cache/",
+  ".tox/",
+  ".coverage",
+  ".git/",
+  ".github/",
+  ".idea/",
+  ".vscode/",
+  ".DS_Store",
+  "Thumbs.db",
+  "*.pyc",
+  "*.pyo",
+  "*.pyd",
+  "*.zip",
+  "*.log",
+  "*.egg-info/",
+  "*.sublime-*",
+  ".gitignore",
+  ".gitattributes",
+  "build.bat",
+  "build.sh",
+  "diagnostic.bat",
+  "install.bat",
+  "run.bat",
+  "docs/",
+  "README_datapipeline.md",
+  "ui/",
+  "webui/package_release.py",
+  "webui/setup.py",
+  "venv/",
+  ".pip_cache/",
+  ".hf_cache/",
+  "workspace/",
+]
