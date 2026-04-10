@@ -197,13 +197,15 @@ def ensure_webview_running(context=None) -> subprocess.Popen:
     WEBVIEW_LOG_HANDLE = log_file
 
     vendor_dir = utils.vendor_path(create=True)
+    shared_dependency_paths = utils.shared_dependency_paths()
     env = os.environ.copy()
     pythonpath_parts = [str(vendor_dir), str(utils.package_root())]
-    pythonpath_parts.extend(str(path) for path in utils.shared_dependency_paths() if not path == vendor_dir)
+    pythonpath_parts.extend(str(path) for path in shared_dependency_paths if not path == vendor_dir)
     if env.get("PYTHONPATH"):
         pythonpath_parts.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
     env["HAG_VENDOR_DIR"] = str(vendor_dir)
+    env["HAG_SHARED_DEP_PATHS"] = os.pathsep.join(str(path) for path in shared_dependency_paths)
     env["HAG_RUNTIME_DIR"] = str(utils.runtime_path(create=True))
     env["HAG_JOB_QUEUE_DIR"] = str(utils.job_queue_path(create=True))
     env["HAG_OUTPUT_DIR"] = str(utils.output_path(create=True))

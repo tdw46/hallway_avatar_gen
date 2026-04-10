@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -51,6 +52,21 @@ _STARTUP_SCAN_REGISTERED = False
 _RUNTIME_PROBE_TTL = 2.0
 _STATUS_CACHE_TTL = 15.0
 _STACK_GROUP_KEYS = {"apple_metal", "windows_cuda", "linux_cuda"}
+_FAST_LOCAL_MARKER_GROUP_KEYS = {"inference_base"}
+
+_SPECIAL_IMPORT_TARGETS: dict[str, str] = {
+    "PIL": "PIL.Image",
+}
+
+_DIST_INFO_ALIASES: dict[str, tuple[str, ...]] = {
+    "PIL": ("Pillow", "pillow"),
+    "cv2": ("opencv_python", "opencv_python_headless"),
+    "pillow_jxl": ("pillow_jxl_plugin",),
+    "yaml": ("PyYAML", "pyyaml"),
+    "sklearn": ("scikit_learn",),
+    "webview": ("pywebview",),
+    "pytorch_grad_cam": ("grad_cam",),
+}
 
 
 DEPENDENCY_GROUPS: tuple[DependencyGroup, ...] = (
@@ -196,6 +212,80 @@ def requirement_entries(group: DependencyGroup) -> tuple[tuple[str, str], ...]:
     return tuple(zip(import_names, requirement_lines))
 
 
+def _module_import_target(name: str) -> str:
+    return _SPECIAL_IMPORT_TARGETS.get(name, name)
+
+
+def _local_dependency_paths() -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    for path in (
+        *utils.vendor_overlay_paths(),
+        utils.vendor_path(create=False),
+        utils.package_root() / "_vendor",
+    ):
+        try:
+            if path.exists() and path.is_dir():
+                candidates.append(path.resolve())
+        except Exception:
+            continue
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            deduped.append(path)
+    return tuple(deduped)
+
+
+def _distribution_prefixes(name: str) -> tuple[str, ...]:
+    prefixes = {
+        name,
+        name.lower(),
+        name.replace("_", "-"),
+        name.replace("_", "-").lower(),
+        name.replace("_", ""),
+        name.replace("_", "").lower(),
+    }
+    prefixes.update(_DIST_INFO_ALIASES.get(name, ()))
+    prefixes.update(alias.lower() for alias in _DIST_INFO_ALIASES.get(name, ()))
+    return tuple(sorted(prefixes))
+
+
+def _path_has_module_marker(path: Path, module_name: str) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+
+    if module_name == "PIL":
+        return (path / "PIL" / "Image.py").exists()
+    if module_name == "cv2":
+        return (path / "cv2").exists() or any(path.glob("cv2*.pyd"))
+    if module_name == "yaml":
+        return (path / "yaml" / "__init__.py").exists() or any(path.glob("_yaml*.pyd"))
+
+    if (path / module_name).exists() or (path / f"{module_name}.py").exists():
+        return True
+
+    return any(
+        any(path.glob(f"{prefix}-*.dist-info"))
+        for prefix in _distribution_prefixes(module_name)
+    )
+
+
+def _local_marker_group_ready(group: DependencyGroup) -> bool | None:
+    if group.key not in _FAST_LOCAL_MARKER_GROUP_KEYS:
+        return None
+
+    local_paths = _local_dependency_paths()
+    if not local_paths:
+        return None
+
+    for module_name, _ in requirement_entries(group):
+        if not any(_path_has_module_marker(path, module_name) for path in local_paths):
+            return False
+    return True
+
+
 def _dependency_signature() -> str:
     return os.pathsep.join(str(path) for path in utils.shared_dependency_paths())
 
@@ -321,6 +411,82 @@ print(json.dumps(payload))
     return payload
 
 
+def _probe_import_payloads(module_names: tuple[str, ...] | list[str]) -> dict[str, dict[str, object]]:
+    requested = tuple(dict.fromkeys(module_names))
+    paths = [str(path) for path in utils.shared_dependency_paths()]
+    probe_targets = {name: _module_import_target(name) for name in requested}
+    cache_key = (
+        "imports:" + "|".join(f"{name}={probe_targets[name]}" for name in requested),
+        os.pathsep.join(paths),
+    )
+    now = time.monotonic()
+    with _STATE_LOCK:
+        cached = _RUNTIME_PROBE_CACHE.get(cache_key)
+    if cached and now - cached[0] <= _RUNTIME_PROBE_TTL:
+        return cached[1]
+
+    code = f"""
+import importlib
+import importlib.util
+import json
+import sys
+
+paths = {paths!r}
+probe_targets = {probe_targets!r}
+for path in paths:
+    if path in sys.path:
+        sys.path.remove(path)
+for path in reversed(paths):
+    sys.path.insert(0, path)
+importlib.invalidate_caches()
+payload = {{}}
+
+for public_name, target_name in probe_targets.items():
+    item = {{'ok': False, 'summary': '', 'origin': '', 'error': ''}}
+    try:
+        spec = importlib.util.find_spec(target_name)
+        item['origin'] = getattr(spec, 'origin', '') if spec else ''
+        if spec is None:
+            item['summary'] = 'not installed'
+        else:
+            mod = importlib.import_module(target_name)
+            item['ok'] = True
+            item['summary'] = 'installed'
+            item['origin'] = getattr(mod, '__file__', item['origin'])
+    except Exception as exc:
+        item['summary'] = f'failed: {{exc.__class__.__name__}}'
+        item['error'] = f'{{exc.__class__.__name__}}: {{exc}}'
+    payload[public_name] = item
+
+print(json.dumps(payload))
+"""
+
+    try:
+        proc = subprocess.run(
+            [utils.blender_python_executable(), "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        stdout = proc.stdout.strip().splitlines()
+        payload_line = stdout[-1] if stdout else ""
+        payload = json.loads(payload_line) if payload_line else {}
+    except Exception as exc:
+        payload = {
+            name: {
+                "ok": False,
+                "summary": f"probe failed: {exc.__class__.__name__}",
+                "origin": "",
+                "error": f"{exc.__class__.__name__}: {exc}",
+            }
+            for name in requested
+        }
+
+    with _STATE_LOCK:
+        _RUNTIME_PROBE_CACHE[cache_key] = (now, payload)
+    return payload
+
+
 def _clear_runtime_probe_cache() -> None:
     with _STATE_LOCK:
         _RUNTIME_PROBE_CACHE.clear()
@@ -335,17 +501,8 @@ def _module_available(name: str) -> bool:
     if cached and now - cached[0] <= _STATUS_CACHE_TTL:
         return cached[1]
 
-    if name in {"torch", "torchvision", "torchaudio", "webview"}:
-        payload = _probe_runtime_payload("import", name)
-        available = bool(payload.get("ok"))
-    else:
-        utils.bootstrap_dependency_paths()
-        try:
-            importlib.import_module(name)
-        except Exception:
-            available = False
-        else:
-            available = True
+    payload = _probe_import_payloads((name,))
+    available = bool((payload.get(name) or {}).get("ok"))
 
     with _STATE_LOCK:
         _MODULE_AVAILABILITY_CACHE[cache_key] = (now, available)
@@ -353,31 +510,39 @@ def _module_available(name: str) -> bool:
 
 
 def missing_modules(group: DependencyGroup) -> list[str]:
-    return [module_name for module_name, _ in requirement_entries(group) if not _module_available(module_name)]
+    module_names = tuple(module_name for module_name, _ in requirement_entries(group))
+    payload = _probe_import_payloads(module_names)
+    return [module_name for module_name in module_names if not bool((payload.get(module_name) or {}).get("ok"))]
 
 
 def group_status(group: DependencyGroup) -> tuple[bool, str]:
     current_platform = platform.system()
-    signature = f"{current_platform}|{_dependency_signature()}"
-    cache_key = (group.key, signature)
-    now = time.monotonic()
-    with _STATE_LOCK:
-        cached = _GROUP_STATUS_CACHE.get(cache_key)
-    if cached and now - cached[0] <= _STATUS_CACHE_TTL:
-        return cached[1]
 
     if group.supported_platforms and current_platform not in group.supported_platforms:
         supported = ", ".join(group.supported_platforms)
         result = (False, f"This profile is for {supported}.")
     else:
-        missing = missing_modules(group)
-        if missing:
-            result = (False, f"Missing: {', '.join(missing)}")
-        else:
+        local_ready = _local_marker_group_ready(group)
+        if local_ready is True:
             result = (True, "Installed")
+        else:
+            signature = f"{current_platform}|{_dependency_signature()}"
+            cache_key = (group.key, signature)
+            now = time.monotonic()
+            with _STATE_LOCK:
+                cached = _GROUP_STATUS_CACHE.get(cache_key)
+            if cached and now - cached[0] <= _STATUS_CACHE_TTL:
+                return cached[1]
 
-    with _STATE_LOCK:
-        _GROUP_STATUS_CACHE[cache_key] = (now, result)
+            missing = missing_modules(group)
+            if missing:
+                result = (False, f"Missing: {', '.join(missing)}")
+            else:
+                result = (True, "Installed")
+
+            with _STATE_LOCK:
+                _GROUP_STATUS_CACHE[cache_key] = (now, result)
+            return result
     return result
 
 
@@ -707,15 +872,38 @@ def _stream_process(command: list[str], log_file, *, cwd: Path | None = None) ->
         return process.wait()
 
 
+def _retarget_install_command(command: list[str], target_dir: Path) -> list[str]:
+    updated = list(command)
+    if "--target" in updated:
+        target_idx = updated.index("--target") + 1
+        updated[target_idx] = str(target_dir)
+    return updated
+
+
+def _activate_staged_vendor(source_dir: Path, group_key: str) -> Path:
+    if not source_dir.exists():
+        raise RuntimeError(f"Staged install directory is missing: {source_dir}")
+
+    overlays_root = utils.vendor_overlays_root_path(create=True)
+    target_dir = overlays_root / f"{int(time.time())}-{group_key}"
+    suffix = 1
+    while target_dir.exists():
+        suffix += 1
+        target_dir = overlays_root / f"{int(time.time())}-{group_key}-{suffix}"
+    shutil.move(str(source_dir), str(target_dir))
+    return target_dir
+
+
 def _write_filtered_requirements(group: DependencyGroup, destination_dir: Path) -> tuple[Path, list[str]]:
     entries = list(requirement_entries(group))
     if group.key in _STACK_GROUP_KEYS:
         selected_entries = entries
     else:
+        payload = _probe_import_payloads(tuple(module_name for module_name, _ in entries))
         selected_entries = [
             (module_name, requirement_line)
             for module_name, requirement_line in entries
-            if not _module_available(module_name)
+            if not bool((payload.get(module_name) or {}).get("ok"))
         ]
     if not selected_entries:
         raise RuntimeError(f"{group.label} does not have any missing requirements")
@@ -737,29 +925,36 @@ def _write_filtered_requirements(group: DependencyGroup, destination_dir: Path) 
     return temp_path, [module_name for module_name, _ in selected_entries]
 
 
-def _remove_path(target: Path) -> None:
+def _remove_path(target: Path, failures: list[str] | None = None) -> None:
     if not target.exists():
         return
-    if target.is_dir() and not target.is_symlink():
-        for child in target.iterdir():
-            _remove_path(child)
-        target.rmdir()
-    else:
-        target.unlink()
+    try:
+        if target.is_dir() and not target.is_symlink():
+            for child in target.iterdir():
+                _remove_path(child, failures)
+            target.rmdir()
+        else:
+            target.unlink()
+    except (PermissionError, OSError) as exc:
+        if failures is not None:
+            failures.append(f"{target}: {exc}")
 
 
-def _purge_group_install_targets(group: DependencyGroup, vendor_dir: Path) -> None:
+def _purge_group_install_targets(group: DependencyGroup, vendor_dir: Path) -> list[str]:
     if group.key not in _STACK_GROUP_KEYS:
-        return
+        return []
 
     prefixes = {"torch", "torchvision", "torchaudio", "functorch", "torchgen", "bitsandbytes"}
+    failures: list[str] = []
     for prefix in prefixes:
-        _remove_path(vendor_dir / prefix)
-        _remove_path(vendor_dir / f"{prefix}.libs")
+        _remove_path(vendor_dir / prefix, failures)
+        _remove_path(vendor_dir / f"{prefix}.libs", failures)
         for match in vendor_dir.glob(f"{prefix}-*.dist-info"):
-            _remove_path(match)
+            _remove_path(match, failures)
         for match in vendor_dir.glob(f"{prefix}-*.data"):
-            _remove_path(match)
+            _remove_path(match, failures)
+    return failures
+
 
 def _install_group_worker(group_key: str) -> None:
     group = get_group(group_key)
@@ -809,7 +1004,7 @@ def _install_group_worker(group_key: str) -> None:
         str(requirements_path(group)),
     ] + _find_links_args([wheel_cache, *shared_caches])
     if group.index_url:
-        download_command.extend(["--index-url", group.index_url])
+        download_command.extend(["--extra-index-url", group.index_url])
 
     with log_path.open("w", encoding="utf-8") as log_file:
         log_file.write(f"Installing dependency group: {group.label}\n")
@@ -828,14 +1023,15 @@ def _install_group_worker(group_key: str) -> None:
         log_file.write(f"Filtered requirements: {filtered_requirements_path}\n")
         log_file.write(f"Missing imports: {', '.join(missing_imports)}\n\n")
 
-        if group.key in _STACK_GROUP_KEYS:
-            log_file.write("Purging existing local Torch stack before reinstall.\n\n")
-            _purge_group_install_targets(group, vendor_dir)
+        staging_root = Path(tempfile.mkdtemp(prefix=f"{group.key}-stage-", dir=str(logs_dir)))
+        staged_vendor_dir = staging_root / "_vendor"
+        staged_vendor_dir.mkdir(parents=True, exist_ok=True)
 
         _update_install_state(message=f"{group.label}: preparing installer", current_line="Bootstrapping pip", progress=0.12)
         ensurepip_code = _stream_process(_pip_command_base()[:2] + ["ensurepip", "--upgrade"], log_file)
         if ensurepip_code != 0:
             filtered_requirements_path.unlink(missing_ok=True)
+            shutil.rmtree(staging_root, ignore_errors=True)
             _update_install_state(
                 is_running=False,
                 message="ensurepip failed",
@@ -849,18 +1045,34 @@ def _install_group_worker(group_key: str) -> None:
         install_from_cache_command[install_from_cache_command.index(str(requirements_path(group)))] = str(filtered_requirements_path)
         download_command[download_command.index(str(requirements_path(group)))] = str(filtered_requirements_path)
         install_command[install_command.index(str(requirements_path(group)))] = str(filtered_requirements_path)
+        staged_install_from_cache_command = _retarget_install_command(install_from_cache_command, staged_vendor_dir)
+        staged_install_command = _retarget_install_command(install_command, staged_vendor_dir)
 
         _update_install_state(message=f"{group.label}: checking shared wheel caches", current_line="Checking shared wheel caches", progress=0.35)
         try:
-            rc = _stream_process(install_from_cache_command, log_file)
+            rc = _stream_process(staged_install_from_cache_command, log_file)
             if rc != 0:
                 _update_install_state(message=f"{group.label}: downloading missing wheels", current_line="Downloading missing wheels", progress=0.65)
                 rc = _stream_process(download_command, log_file)
                 if rc == 0:
                     _update_install_state(message=f"{group.label}: installing downloaded wheels", current_line="Installing downloaded wheels", progress=0.88)
-                    rc = _stream_process(install_command, log_file)
+                    rc = _stream_process(staged_install_command, log_file)
+            if rc == 0:
+                _update_install_state(message=f"{group.label}: activating staged wheels", current_line="Activating staged dependency overlay", progress=0.94)
+                try:
+                    activated_path = _activate_staged_vendor(staged_vendor_dir, group.key)
+                    log_file.write(f"Activated dependency overlay: {activated_path}\n")
+                except Exception as exc:
+                    rc = 1
+                    sync_error = f"Staged activation failed: {exc.__class__.__name__}: {exc}"
+                    log_file.write(f"{sync_error}\n")
+                    _update_install_state(
+                        current_line="Activating staged dependency overlay failed",
+                        failure_summary=sync_error,
+                    )
         finally:
             filtered_requirements_path.unlink(missing_ok=True)
+            shutil.rmtree(staging_root, ignore_errors=True)
 
     message = f"Installed missing packages for {group.label}" if rc == 0 else f"Failed installing {group.label}"
     refresh_error = ""

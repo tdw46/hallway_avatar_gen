@@ -355,12 +355,52 @@ def prepare_input_image_payload(image_input) -> dict[str, object]:
     }
 
 
+def _split_path_entries(raw_value: str) -> list[str]:
+    if not raw_value:
+        return []
+    return [entry for entry in raw_value.split(os.pathsep) if entry]
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for entry in paths:
+        normalized = os.path.normcase(os.path.normpath(entry))
+        if not entry or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(entry)
+    return deduped
+
+
+def _current_overlay_paths_from_env() -> list[str]:
+    vendor_raw = os.environ.get("HAG_VENDOR_DIR", "").strip()
+    if not vendor_raw:
+        return []
+
+    overlays_root = Path(vendor_raw).parent / "_vendor_overlays"
+    if not overlays_root.exists() or not overlays_root.is_dir():
+        return []
+
+    overlays: list[Path] = [child for child in overlays_root.iterdir() if child.is_dir()]
+    overlays.sort(key=lambda item: (item.stat().st_mtime, item.name.lower()), reverse=True)
+    return [str(path) for path in overlays]
+
+
 def _subprocess_pythonpath() -> str:
-    parts = [str(COMMON_ROOT), str(INFERENCE_ROOT), str(SEETHROUGH_ROOT)]
-    existing = os.environ.get("PYTHONPATH", "")
-    if existing:
-        parts.append(existing)
-    return os.pathsep.join(parts)
+    vendor_dir = os.environ.get("HAG_VENDOR_DIR", "").strip()
+    shared_paths = _split_path_entries(os.environ.get("HAG_SHARED_DEP_PATHS", ""))
+    existing = _split_path_entries(os.environ.get("PYTHONPATH", ""))
+    parts = [
+        *_current_overlay_paths_from_env(),
+        vendor_dir,
+        *shared_paths,
+        str(COMMON_ROOT),
+        str(INFERENCE_ROOT),
+        str(SEETHROUGH_ROOT),
+        *existing,
+    ]
+    return os.pathsep.join(_dedupe_paths(parts))
 
 
 def _summarize_process_error(error_text: str) -> str:

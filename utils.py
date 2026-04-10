@@ -131,6 +131,24 @@ def vendor_path(*, create: bool = False) -> Path:
     return extension_user_path("_vendor", create=create)
 
 
+def vendor_overlays_root_path(*, create: bool = False) -> Path:
+    return extension_user_path("_vendor_overlays", create=create)
+
+
+def vendor_overlay_paths() -> list[Path]:
+    root = vendor_overlays_root_path(create=False)
+    if not root.exists() or not root.is_dir():
+        return []
+
+    overlays = [
+        child.resolve()
+        for child in root.iterdir()
+        if child.is_dir() and _path_has_dependency_markers(child)
+    ]
+    overlays.sort(key=lambda item: (item.stat().st_mtime, item.name.lower()), reverse=True)
+    return overlays
+
+
 def wheel_cache_path(*, create: bool = False) -> Path:
     return extension_user_path("wheels/cache", create=create)
 
@@ -293,33 +311,43 @@ def shared_dependency_paths(*, force_refresh: bool = False) -> list[Path]:
     if not force_refresh and _SHARED_DEPENDENCY_CACHE and now - _SHARED_DEPENDENCY_CACHE[0] <= _PATH_CACHE_TTL:
         return list(_SHARED_DEPENDENCY_CACHE[1])
 
-    candidates: list[Path] = []
+    local_candidates: list[Path] = []
+    external_candidates: list[Path] = []
 
     for path in (
+        *vendor_overlay_paths(),
         vendor_path(create=False),
         package_root() / "_vendor",
     ):
         if _path_has_dependency_markers(path):
-            candidates.append(path.resolve())
+            local_candidates.append(path.resolve())
 
     for sibling in _sibling_extension_dirs():
         for candidate in (sibling / "_vendor", sibling / "vendor"):
             if _path_has_dependency_markers(candidate):
-                candidates.append(candidate.resolve())
+                external_candidates.append(candidate.resolve())
 
     for site_path in [site.getusersitepackages(), *site.getsitepackages()]:
         candidate = Path(site_path)
         if _path_has_dependency_markers(candidate):
-            candidates.append(candidate.resolve())
+            external_candidates.append(candidate.resolve())
 
-    deduped: list[Path] = []
+    local_deduped: list[Path] = []
+    local_seen: set[Path] = set()
+    for path in local_candidates:
+        if path not in local_seen:
+            local_seen.add(path)
+            local_deduped.append(path)
+
+    external_deduped: list[Path] = []
     seen: set[Path] = set()
-    for path in candidates:
+    seen.update(local_seen)
+    for path in external_candidates:
         if path not in seen:
             seen.add(path)
-            deduped.append(path)
+            external_deduped.append(path)
 
-    result = sorted(deduped, key=_candidate_import_score)
+    result = local_deduped + sorted(external_deduped, key=_candidate_import_score)
     _SHARED_DEPENDENCY_CACHE = (now, result)
     return list(result)
 
