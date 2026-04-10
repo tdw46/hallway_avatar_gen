@@ -180,7 +180,26 @@ def main() -> int:
         window.shown += lambda: _raise_window_on_launch(window)
     except Exception:
         pass
-    webview.start(_on_loaded, (window,), debug=False)
+    def _on_closed(*_args) -> None:
+        print("Hallway Avatar Gen webview: window closed", flush=True)
+        js_api.shutdown()
+
+    for candidate in (
+        getattr(getattr(window, "events", None), "closed", None),
+        getattr(window, "closed", None),
+    ):
+        if candidate is None:
+            continue
+        try:
+            candidate += _on_closed
+            break
+        except Exception:
+            continue
+
+    try:
+        webview.start(_on_loaded, (window,), debug=False)
+    finally:
+        js_api.shutdown()
     return 0
 
 

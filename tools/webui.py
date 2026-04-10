@@ -437,6 +437,9 @@ class HallwayWebApp:
         self.window = None
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
+        self._process: subprocess.Popen | None = None
+        self._active_run_token = 0
+        self._cancel_reasons: dict[int, str] = {}
         self.state: dict[str, object] = {
             "selected_image_path": "",
             "selected_name": "No image selected.",
@@ -457,6 +460,68 @@ class HallwayWebApp:
 
     def bind_window(self, window) -> None:
         self.window = window
+
+    def _next_run_token(self) -> int:
+        with self._lock:
+            self._active_run_token += 1
+            return self._active_run_token
+
+    def _is_active_run(self, run_token: int) -> bool:
+        with self._lock:
+            return self._active_run_token == run_token
+
+    def _set_state_for_run(self, run_token: int, **updates) -> bool:
+        with self._lock:
+            if self._active_run_token != run_token:
+                return False
+            self.state.update(updates)
+            return True
+
+    def _take_cancel_reason(self, run_token: int) -> str:
+        with self._lock:
+            return self._cancel_reasons.pop(run_token, "")
+
+    def _finalize_run_process(self, run_token: int, process: subprocess.Popen | None) -> None:
+        with self._lock:
+            if self._active_run_token == run_token and self._process is process:
+                self._process = None
+
+    def _terminate_process(self, process: subprocess.Popen | None, reason: str) -> None:
+        if process is None or process.poll() is not None:
+            return
+        _webui_log("warning", f"Stopping inference process: {reason}")
+        try:
+            process.terminate()
+            process.wait(timeout=8)
+            return
+        except Exception:
+            pass
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except Exception as exc:
+            _webui_log("warning", f"Failed to kill inference process cleanly: {exc}")
+
+    def _cancel_active_inference(self, reason: str, *, update_state: bool) -> tuple[subprocess.Popen | None, int]:
+        with self._lock:
+            process = self._process
+            run_token = self._active_run_token
+            if not process or process.poll() is not None:
+                return None, 0
+            self._cancel_reasons[run_token] = reason
+            self._process = None
+            if update_state:
+                self.state["is_running"] = False
+                self.state["error"] = ""
+                self.state["status_text"] = reason
+        self._terminate_process(process, reason)
+        return process, run_token
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._active_run_token += 1
+            self.state["is_running"] = False
+        self._cancel_active_inference("Inference canceled because the Hallway Avatar Gen window was closed.", update_state=False)
 
     def on_console(self, payload):
         try:
@@ -563,15 +628,20 @@ class HallwayWebApp:
 
     def start_inference(self, options: dict[str, object] | None = None) -> dict[str, object]:
         options = options or {}
+        old_process: subprocess.Popen | None = None
         with self._lock:
-            if self.state.get("is_running"):
-                self.state["error"] = "Inference is already running."
-                return self._snapshot()
             image_path = str(self.state.get("selected_image_path") or "")
             if not image_path:
                 self.state["error"] = "Choose an image first."
                 self.state["status_text"] = "Choose an image first."
                 return self._snapshot()
+            if self.state.get("is_running"):
+                self.state["status_text"] = "Canceling previous inference..."
+                self.state["error"] = ""
+                old_process = self._process
+                if old_process and old_process.poll() is None:
+                    self._cancel_reasons[self._active_run_token] = "Inference canceled because a new run was started."
+                    self._process = None
 
             controls = dict(self.state.get("controls") or {})
             controls.update(
@@ -588,8 +658,12 @@ class HallwayWebApp:
             self.state["error"] = ""
             self.state["gallery"] = []
             self.state["status_text"] = "Starting inference"
+            run_token = self._next_run_token()
 
-        self._worker = threading.Thread(target=self._run_inference_worker, daemon=True)
+        if old_process and old_process.poll() is None:
+            self._terminate_process(old_process, "a new Hallway Avatar Gen inference run was started")
+
+        self._worker = threading.Thread(target=self._run_inference_worker, args=(run_token,), daemon=True)
         self._worker.start()
         return self._snapshot()
 
@@ -597,11 +671,12 @@ class HallwayWebApp:
         with self._lock:
             self.state.update(updates)
 
-    def _run_inference_worker(self) -> None:
+    def _run_inference_worker(self, run_token: int) -> None:
         run_id = ""
         save_dir = OUTPUT_BASE
         layer_dir = OUTPUT_BASE
         log_path = OUTPUT_BASE / "webui.log"
+        process: subprocess.Popen | None = None
         try:
             with self._lock:
                 image_path = str(self.state.get("selected_image_path") or "")
@@ -663,8 +738,16 @@ class HallwayWebApp:
                     stderr=subprocess.STDOUT,
                     env=env,
                 )
+                with self._lock:
+                    if self._active_run_token != run_token:
+                        self._terminate_process(process, "run token became stale before inference started")
+                        return
+                    self._process = process
 
                 while process.poll() is None:
+                    if not self._is_active_run(run_token):
+                        self._terminate_process(process, "run token became stale while inference was running")
+                        return
                     time.sleep(2)
                     elapsed = time.time() - start_time
                     elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
@@ -677,7 +760,8 @@ class HallwayWebApp:
                         status_text += f"\n{update_note}"
                     if layer_count:
                         status_text += f"\nLayers ready: {layer_count}"
-                    self._set_state(
+                    self._set_state_for_run(
+                        run_token,
                         status_text=status_text,
                         output_dir=str(save_dir),
                         error="",
@@ -685,11 +769,23 @@ class HallwayWebApp:
                     )
 
             if process.returncode != 0:
+                cancel_reason = self._take_cancel_reason(run_token)
+                if cancel_reason:
+                    _job_payload(run_id, status="canceled", save_dir=save_dir, layer_dir=layer_dir, error=cancel_reason)
+                    self._set_state_for_run(
+                        run_token,
+                        is_running=False,
+                        error="",
+                        status_text=cancel_reason,
+                        output_dir=str(save_dir),
+                    )
+                    return
                 err_tail = _safe_error_tail(log_path)
                 live_gallery = _gallery_payload(layer_dir)
                 _webui_log("error", f"Inference failed for {input_path}.\n{err_tail}")
                 _job_payload(run_id, status="failed", save_dir=save_dir, layer_dir=layer_dir, error=err_tail)
-                self._set_state(
+                self._set_state_for_run(
+                    run_token,
                     is_running=False,
                     error=_summarize_process_error(err_tail),
                     status_text=f"Inference failed.\n{_summarize_process_error(err_tail)}",
@@ -719,7 +815,8 @@ class HallwayWebApp:
                 f"{peak_note}\nOutput: {save_dir}"
             )
             _job_payload(run_id, status="completed", save_dir=save_dir, layer_dir=layer_dir)
-            self._set_state(
+            self._set_state_for_run(
+                run_token,
                 is_running=False,
                 error="",
                 gallery=gallery,
@@ -731,12 +828,15 @@ class HallwayWebApp:
             _webui_log("error", f"Unhandled webui exception: {exc}\n{err_text}")
             if run_id:
                 _job_payload(run_id, status="failed", save_dir=save_dir, layer_dir=layer_dir, error=err_text[-1500:])
-            self._set_state(
+            self._set_state_for_run(
+                run_token,
                 is_running=False,
                 error=str(exc),
                 status_text=f"Web UI error:\n{exc}",
                 output_dir=str(save_dir),
             )
+        finally:
+            self._finalize_run_process(run_token, process)
 
     def open_output_folder(self) -> dict[str, object]:
         with self._lock:
