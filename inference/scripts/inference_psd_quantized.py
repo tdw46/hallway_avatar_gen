@@ -316,7 +316,13 @@ def run_layerdiff(pipeline, imgp, save_dir, seed, num_inference_steps, resolutio
 
     # Head crop
     head_tag_list = ['headwear', 'face', 'irides', 'eyebrow', 'eyewhite', 'eyelash', 'eyewear', 'ears', 'earwear', 'nose', 'mouth']
-    hx0, hy0, hw, hh = cv2.boundingRect(cv2.findNonZero((head_img[..., -1] > 15).astype(np.uint8)))
+    head_mask = (head_img[..., -1] > 15).astype(np.uint8)
+    head_points = cv2.findNonZero(head_mask)
+    if head_points is None:
+        print('  [Head crop fallback] Head alpha mask was empty; using full source image for head refinement.')
+        hx0, hy0, hw, hh = 0, 0, fullpage.shape[1], fullpage.shape[0]
+    else:
+        hx0, hy0, hw, hh = cv2.boundingRect(head_points)
 
     hx = int(hx0 * scale) - pad_pos[0]
     hy = int(hy0 * scale) - pad_pos[1]
@@ -339,6 +345,10 @@ def run_layerdiff(pipeline, imgp, save_dir, seed, num_inference_steps, resolutio
         return img[y1: y2, x1: x2], (x1, y1, x2, y2)
 
     input_head, (hx1, hy1, hx2, hy2) = _crop_head(input_img, [hx, hy, hw, hh])
+    if input_head.size == 0 or input_head.shape[0] == 0 or input_head.shape[1] == 0:
+        print('  [Head crop fallback] Computed head crop was empty; using full source image for head refinement.')
+        input_head = input_img.copy()
+        hx1, hy1, hx2, hy2 = 0, 0, input_img.shape[1], input_img.shape[0]
     hx1 = int(hx1 / scale + pad_pos[0] / scale)
     hy1 = int(hy1 / scale + pad_pos[1] / scale)
     ih, iw = input_head.shape[:2]
