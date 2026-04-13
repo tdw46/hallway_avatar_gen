@@ -12,8 +12,19 @@ class HALLWAYAVATAR_OT_build_armature(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context: bpy.types.Context):
-        self.report({"INFO"}, "2.5-D generation and rigging are coming later. This version currently focuses on importing See-through layers.")
-        return {"CANCELLED"}
+        try:
+            armature_obj, rig_plan = pipeline.build_armature_scene(
+                context,
+                bind_weights=context.scene.hallway_avatar_state.auto_bind_on_build,
+            )
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            f"Built {armature_obj.name} using {rig_plan.method or 'heuristic'} with {len(rig_plan.bones)} bones.",
+        )
+        return {"FINISHED"}
 
 
 classes = (HALLWAYAVATAR_OT_build_armature,)

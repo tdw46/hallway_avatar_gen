@@ -48,10 +48,16 @@ class HALLWAYAVATAR_PT_main(Panel):
         options.prop(state, "replace_existing")
         options.prop(state, "auto_bind_on_build")
 
+        rigging = layout.box()
+        rigging.label(text="Rigging")
+        rigging.operator("hallway_avatar.build_armature", icon="ARMATURE_DATA")
+        rigging.operator("hallway_avatar.bind_weights", icon="MOD_ARMATURE")
+        rigging.operator("hallway_avatar.run_pipeline", icon="PLAY")
+
         roadmap = layout.box()
         roadmap.label(text="Roadmap")
-        roadmap.label(text="2.5-D avatar generation via See-through is coming later.")
-        roadmap.label(text="This version focuses on importing See-through layers.")
+        roadmap.label(text="Stretchy-style PSD rigging is available as a first pass.")
+        roadmap.label(text="Full 2.5-D avatar generation via See-through is still coming later.")
 
         summary = layout.box()
         summary.label(text="Summary")

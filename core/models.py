@@ -45,4 +45,7 @@ class RigPlan:
     bones: dict[str, BonePlan] = field(default_factory=dict)
     confidence: float = 0.0
     centerline_x: float = 0.0
-
+    method: str = ""
+    layer_bone_map: dict[str, str] = field(default_factory=dict)
+    joint_pixels: dict[str, tuple[float, float]] = field(default_factory=dict)
+    group_states: dict[str, str] = field(default_factory=dict)

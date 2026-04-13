@@ -29,6 +29,22 @@ def _world_min_vertex_z(obj: bpy.types.Object) -> float | None:
     return min((obj.matrix_world @ vertex.co).z for vertex in obj.data.vertices)
 
 
+def _ground_offset_from_parts(parts: list) -> float:
+    offsets: list[float] = []
+    for part in parts:
+        if part.skipped or not part.imported_object_name:
+            continue
+        obj = bpy.data.objects.get(part.imported_object_name)
+        if obj is None:
+            continue
+        value = float(obj.get("hallway_avatar_ground_offset_z", 0.0))
+        if abs(value) > 1e-9:
+            offsets.append(value)
+    if not offsets:
+        return 0.0
+    return sum(offsets) / len(offsets)
+
+
 def _apply_layer_depth_stack(parts: list, imported_objects: list[bpy.types.Object]) -> None:
     ordered = [(part, obj) for part, obj in zip(parts, imported_objects, strict=False) if obj is not None]
     if not ordered:
@@ -164,12 +180,22 @@ def build_armature_scene(context: bpy.types.Context, *, bind_weights: bool = Fal
     if state.replace_existing:
         blender_utils.clear_collection(state.rig_collection_name)
 
-    armature_obj = armature_builder.build_armature(context, rig_plan, state.rig_collection_name)
+    ground_offset_z = _ground_offset_from_parts(parts)
+    armature_obj = armature_builder.build_armature(
+        context,
+        rig_plan,
+        state.rig_collection_name,
+        edit_bone_offset=(0.0, 0.0, ground_offset_z),
+    )
     state.armature_object_name = armature_obj.name
 
     if bind_weights:
-        weighting.bind_parts(context, armature_obj, parts)
+        weighting.bind_parts(context, armature_obj, parts, rig_plan=rig_plan)
 
+    logger.info(
+        "Built rig with edit-bone ground offset %.6f while armature object stayed at world origin",
+        ground_offset_z,
+    )
     state.last_report = f"Built rig with {len(rig_plan.bones)} bones (confidence {rig_plan.confidence:.2f})"
     logger.info(state.last_report)
     return armature_obj, rig_plan

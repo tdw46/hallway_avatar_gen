@@ -12,8 +12,13 @@ class HALLWAYAVATAR_OT_bind_weights(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context: bpy.types.Context):
-        self.report({"INFO"}, "Weight binding is part of the later 2.5-D generation phase and is not exposed in this importer-first release.")
-        return {"CANCELLED"}
+        try:
+            pipeline.bind_weights_scene(context)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, context.scene.hallway_avatar_state.last_report or "Weights bound.")
+        return {"FINISHED"}
 
 
 classes = (HALLWAYAVATAR_OT_bind_weights,)
