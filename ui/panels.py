@@ -4,6 +4,7 @@ import bpy
 from bpy.types import Panel, UIList
 
 from ..utils import env
+from ..core import qremesh
 
 
 class HALLWAYAVATAR_UL_layers(UIList):
@@ -48,6 +49,31 @@ class HALLWAYAVATAR_PT_main(Panel):
         options.prop(state, "replace_existing")
         options.prop(state, "auto_bind_on_build")
 
+        remesh_box = layout.box()
+        remesh_box.label(text=f"Quad Remesh: {qremesh.runtime_status()}")
+        remesh_box.prop(state.qremesh_settings, "auto_on_import")
+        remesh_box.prop(state.qremesh_settings, "target_quad_count")
+        remesh_box.prop(state.qremesh_settings, "target_count_as_input_percentage")
+        remesh_box.prop(state.qremesh_settings, "target_edge_length")
+        remesh_box.prop(state.qremesh_settings, "adaptive_size")
+        remesh_box.prop(state.qremesh_settings, "adapt_quad_count")
+        remesh_box.label(text="Target Edge Length is converted into an estimated quad count for qmesh.")
+        loop_box = remesh_box.box()
+        loop_box.label(text="Edge Loops Control")
+        loop_box.prop(state.qremesh_settings, "use_vertex_color_map")
+        loop_box.prop(state.qremesh_settings, "use_materials")
+        loop_box.prop(state.qremesh_settings, "use_normals_splitting")
+        loop_box.prop(state.qremesh_settings, "autodetect_hard_edges")
+        misc_box = remesh_box.box()
+        misc_box.label(text="Misc")
+        symmetry = misc_box.row(align=True)
+        symmetry.label(text="Symmetry")
+        symmetry.prop(state.qremesh_settings, "symmetry_x", text="X", toggle=True)
+        symmetry.prop(state.qremesh_settings, "symmetry_y", text="Y", toggle=True)
+        symmetry.prop(state.qremesh_settings, "symmetry_z", text="Z", toggle=True)
+        remesh_box.label(text="Hallway now uses the vendored remesher runtime inside this extension.")
+        remesh_box.operator("hallway_avatar.remesh_imports", icon="MOD_REMESH")
+
         rigging = layout.box()
         rigging.label(text="Rigging")
         rigging.operator("hallway_avatar.build_armature", icon="ARMATURE_DATA")
@@ -62,6 +88,7 @@ class HALLWAYAVATAR_PT_main(Panel):
         summary = layout.box()
         summary.label(text="Summary")
         summary.label(text=f"Imported: {state.imported_count}")
+        summary.label(text=f"Remeshed: {state.remeshed_count}")
         summary.label(text=f"Skipped: {state.skipped_count}")
         summary.label(text=f"Classified: {state.classified_count}")
         if state.last_report:

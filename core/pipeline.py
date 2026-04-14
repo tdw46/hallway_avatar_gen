@@ -8,7 +8,7 @@ from .. import properties
 from ..utils import blender as blender_utils
 from ..utils import env
 from ..utils.logging import get_logger
-from . import alpha_mesh_adapter, armature_builder, heuristic_rigger, part_classifier, psd_io, weighting
+from . import alpha_mesh_adapter, armature_builder, heuristic_rigger, part_classifier, psd_io, qremesh, weighting
 
 logger = get_logger("pipeline")
 ADDON_ID = env.addon_package_id(__package__)
@@ -147,9 +147,19 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
         if final_min_values:
             logger.info("Ground snap post-pass -> global minimum world Z = %.6f", min(final_min_values))
 
+    remeshed_count = 0
+    if state.qremesh_settings.auto_on_import and imported_objects:
+        remeshed_count = qremesh.remesh_parts(context, parts, qremesh.QRemeshSettings.from_scene_state(state))
+        logger.info("Auto-remeshed %s imported layer objects", remeshed_count)
+
     state.source_psd_path = filepath
     properties.set_layer_items(scene, parts)
-    state.last_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
+    state.remeshed_count = remeshed_count
+    if state.qremesh_settings.auto_on_import and imported_objects:
+        state.last_report = f"Imported {state.imported_count} layers, remeshed {state.remeshed_count}, skipped {state.skipped_count}"
+    else:
+        state.remeshed_count = 0
+        state.last_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
     logger.info(state.last_report)
     return parts
 
@@ -211,3 +221,23 @@ def bind_weights_scene(context: bpy.types.Context) -> None:
     parts = properties.get_parts(scene)
     weighting.bind_parts(context, armature_obj, parts)
     state.last_report = f"Bound {len([part for part in parts if not part.skipped])} layers to {armature_obj.name}"
+
+
+def remesh_imported_scene(context: bpy.types.Context, *, only_selected: bool = False) -> int:
+    scene = context.scene
+    state = scene.hallway_avatar_state
+    parts = properties.get_parts(scene)
+    if not parts:
+        raise RuntimeError("No imported layers found. Import a PSD first.")
+
+    count = qremesh.remesh_parts(
+        context,
+        parts,
+        qremesh.QRemeshSettings.from_scene_state(state),
+        only_selected=only_selected,
+    )
+    properties.set_layer_items(scene, parts)
+    state.remeshed_count = count
+    state.last_report = f"Remeshed {count} imported layer objects"
+    logger.info(state.last_report)
+    return count

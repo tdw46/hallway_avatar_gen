@@ -7,6 +7,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from bpy.types import AddonPreferences
 
+from .core import qremesh
 from .utils import env, paths
 
 ADDON_ID = __package__ or "hallway_avatar_gen"
@@ -50,7 +51,10 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
         status_box.label(text=f"Vendor Dir: {paths.vendor_dir()}")
         status_box.label(text=f"Dependency Site: {paths.dependency_site_dir(self.cache_dir)}")
         status_box.label(text=f"Wheels Dir: {paths.wheels_dir()}")
+        status_box.label(text=f"Resources Dir: {paths.resources_dir()}")
         status_box.label(text=f"PSD Backend: {env.psd_backend_status(self.cache_dir)}")
+        status_box.label(text=f"Quad Remesher Backend: {qremesh.runtime_status()}")
+        status_box.label(text=f"Vendored Engine: {qremesh.engine_executable()}")
 
         install_box = layout.box()
         install_box.label(text="PSD Backend")
@@ -58,6 +62,11 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
         install_box.label(text="See-through generation dependencies are not required yet.")
         install_box.label(text="Use bundled wheels or vendored packages inside this extension folder.")
         install_box.operator("hallway_avatar.install_psd_backend", icon="IMPORT")
+
+        remesh_box = layout.box()
+        remesh_box.label(text="Quad Remesh")
+        remesh_box.label(text="Hallway now uses a vendored Quad Remesher runtime from this extension.")
+        remesh_box.label(text="It exports FBX, calls the local qmesh binary, then reapplies Hallway transfers.")
 
 
 classes = (HALLWAYAVATAR_Preferences,)

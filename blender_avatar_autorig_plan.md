@@ -58,11 +58,12 @@ Use this file as the living implementation plan for the Blender extension descri
 - [x] Extension shell, preferences, diagnostics, scene state, and UI panel scaffolded
 - [x] PSD import path implemented with extension-local bundled wheel / vendored dependency support
 - [x] Empty/transparent/hidden PSD layers are skipped with per-layer reasons recorded in scene state
-- [x] Imported visible PSD layers are cached as PNGs and converted into fallback deformable grid meshes aligned to the PSD canvas
+- [x] Imported visible PSD layers are cached as PNGs and converted into traced alpha meshes aligned to the PSD canvas
 - [x] See-through-aware name parsing plus geometry fallback classification implemented
-- [x] Heuristic armature generation and first-pass binding implemented
+- [x] Heuristic armature generation, grounding, and first-pass binding implemented
+- [x] Hallway remesh flow migrated to a vendored Quad Remesher `qmesh` runtime inside the extension
 - [ ] Blender runtime validation still needed
-- [ ] Import Meshed Alpha tracing path still needs to replace or augment the current fallback mesh generator
+- [x] Import Meshed Alpha tracing path adapted into the Hallway PSD import pipeline
 
 ---
 

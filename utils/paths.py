@@ -30,6 +30,18 @@ def wheels_dir() -> Path:
     return addon_root() / "wheels"
 
 
+def resources_dir() -> Path:
+    return addon_root() / "resources"
+
+
+def quad_remesher_runtime_dir() -> Path:
+    return resources_dir() / "quad_remesher_engine"
+
+
+def voxel_skinning_runtime_dir() -> Path:
+    return resources_dir() / "voxel_skinning"
+
+
 def default_cache_dir() -> Path:
     system = platform.system()
     if system == "Darwin":

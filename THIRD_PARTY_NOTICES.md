@@ -20,3 +20,13 @@
 - `Pillow`
   - Loaded alongside `psd-tools`
   - Used indirectly for raster image handling when PSD layers are exported to cached PNG files
+
+## Vendored runtime assets
+
+- Quad Remesher runtime bundle
+  - Vendored under `resources/quad_remesher_engine`
+  - Used locally by Hallway for FBX-based remeshing through `qmesh`
+
+- Voxel Skinning binaries
+  - Vendored under `resources/voxel_skinning`
+  - Used locally by Hallway for voxel heat diffuse weight binding

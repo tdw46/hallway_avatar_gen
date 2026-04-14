@@ -37,28 +37,8 @@ def _clear_quarantine(target: Path) -> None:
     )
 
 
-def _candidate_roots() -> list[Path]:
-    roots: list[Path] = []
-    seen: set[Path] = set()
-
-    user_addons = bpy.utils.user_resource("SCRIPTS", path="addons")
-    if user_addons:
-        candidate = Path(user_addons) / "voxel_skinning"
-        if candidate not in seen:
-            roots.append(candidate)
-            seen.add(candidate)
-
-    for addons_dir in bpy.utils.script_paths(subdir="addons"):
-        candidate = Path(addons_dir) / "voxel_skinning"
-        if candidate not in seen:
-            roots.append(candidate)
-            seen.add(candidate)
-
-    explicit = Path("/Users/tylerwalker/Library/Application Support/Blender/5.0/scripts/addons/voxel_skinning")
-    if explicit not in seen:
-        roots.append(explicit)
-
-    return roots
+def _runtime_root() -> Path:
+    return paths.voxel_skinning_runtime_dir()
 
 
 def _binary_relative_path() -> Path:
@@ -86,19 +66,15 @@ def _binary_relative_path() -> Path:
 
 def locate_voxel_binary() -> Path:
     relative = _binary_relative_path()
-    checked: list[str] = []
-    for root in _candidate_roots():
-        _clear_quarantine(root)
-        binary_path = root / relative
-        checked.append(str(binary_path))
-        if binary_path.exists():
-            _clear_quarantine(binary_path)
-            if not os.access(binary_path, os.X_OK):
-                os.chmod(binary_path, 0o755)
-            return binary_path
-    raise FileNotFoundError(
-        "Voxel Skinning binary not found. Checked: " + ", ".join(checked)
-    )
+    root = _runtime_root()
+    _clear_quarantine(root)
+    binary_path = root / relative
+    if binary_path.exists():
+        _clear_quarantine(binary_path)
+        if not os.access(binary_path, os.X_OK):
+            os.chmod(binary_path, 0o755)
+        return binary_path
+    raise FileNotFoundError(f"Vendored voxel skinning binary not found at {binary_path}")
 
 
 def _write_mesh_data(objs: list[bpy.types.Object], filepath: Path) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import PropertyGroup
 
 from .core.models import LayerPart
@@ -43,6 +43,85 @@ class HALLWAYAVATAR_PG_layer_item(PropertyGroup):
     draw_index: IntProperty(name="Draw Index")
 
 
+class HALLWAYAVATAR_PG_qremesh_settings(PropertyGroup):
+    auto_on_import: BoolProperty(name="Auto Remesh On Import", default=False)
+    show_advanced: BoolProperty(name="Show Advanced", default=False)
+    target_quad_count: IntProperty(name="Quad Count", default=1500, soft_min=100, soft_max=10000, min=1, step=20)
+    target_count_as_input_percentage: BoolProperty(name="Target Count Is Input %", default=False)
+    target_edge_length: FloatProperty(name="Target Edge Length", default=0.0, min=0.0, precision=4, unit="LENGTH")
+    adaptive_size: FloatProperty(name="Adaptive Size", default=50.0, min=0.0, max=100.0, precision=0, subtype="PERCENTAGE")
+    adapt_quad_count: BoolProperty(name="Adapt Quad Count", default=True)
+    max_quad_ratio: FloatProperty(name="Max Quad Ratio", default=6.0, min=1.0, soft_max=16.0, precision=2)
+    use_vertex_color_map: BoolProperty(name="Use Vertex Color Map", default=False)
+    use_materials: BoolProperty(name="Use Materials", default=False)
+    use_normals_splitting: BoolProperty(name="Use Normals Splitting", default=False)
+    autodetect_hard_edges: BoolProperty(name="Detect Hard Edges", default=True)
+    enable_remesh: BoolProperty(name="Preprocess", default=False)
+    enable_smoothing: BoolProperty(name="Smoothing", default=False)
+    enable_sharp: BoolProperty(name="Sharp Detection", default=True)
+    sharp_angle: FloatProperty(name="Angle Threshold", min=0.0, max=180.0, default=35.0, precision=1, step=10, subtype="UNSIGNED")
+    symmetry_x: BoolProperty(name="X Symmetry", default=False)
+    symmetry_y: BoolProperty(name="Y Symmetry", default=False)
+    symmetry_z: BoolProperty(name="Z Symmetry", default=False)
+    scale_factor: FloatProperty(name="Dynamic Quad Size", min=0.01, max=10.0, default=1.0, subtype="FACTOR")
+    fixed_chart_clusters: IntProperty(name="Fixed Chart Clusters", min=0, default=0)
+    alpha: FloatProperty(name="Alpha", default=0.005, min=0.0, max=0.999, precision=3, step=0.5, subtype="FACTOR")
+    ilp_method: EnumProperty(
+        name="ILP Method",
+        items=(
+            ("LEASTSQUARES", "Least Squares", ""),
+            ("ABS", "Absolute", ""),
+        ),
+        default="LEASTSQUARES",
+    )
+    time_limit: IntProperty(name="Time Limit", min=1, default=200)
+    gap_limit: FloatProperty(name="Gap Limit", min=0.0, default=0.0)
+    minimum_gap: FloatProperty(name="Minimum Gap", min=0.0, default=0.4)
+    isometry: BoolProperty(name="Isometry", default=True)
+    regularity_quadrilaterals: BoolProperty(name="Regularity Quads", default=True)
+    regularity_non_quadrilaterals: BoolProperty(name="Regularity Non-Quads", default=True)
+    regularity_non_quadrilaterals_weight: FloatProperty(name="Non-Quad Weight", min=0.0, max=1.0, default=0.9)
+    align_singularities: BoolProperty(name="Align Singularities", default=True)
+    align_singularities_weight: FloatProperty(name="Singularity Weight", min=0.0, max=1.0, default=0.1)
+    repeat_losing_constraints_iterations: BoolProperty(name="Repeat Constraint Iterations", default=True)
+    repeat_losing_constraints_quads: BoolProperty(name="Repeat Constraint Quads", default=False)
+    repeat_losing_constraints_non_quads: BoolProperty(name="Repeat Constraint Non-Quads", default=False)
+    repeat_losing_constraints_align: BoolProperty(name="Repeat Constraint Align", default=True)
+    hard_parity_constraint: BoolProperty(name="Hard Parity Constraint", default=True)
+    flow_config: EnumProperty(
+        name="Flow Config",
+        items=(
+            ("SIMPLE", "Simple", ""),
+            ("HALF", "Half", ""),
+        ),
+        default="SIMPLE",
+    )
+    satsuma_config: EnumProperty(
+        name="Satsuma Config",
+        items=(
+            ("DEFAULT", "Default", ""),
+            ("MST", "Approx-MST", ""),
+            ("ROUND2EVEN", "Approx-Round2Even", ""),
+            ("SYMMDC", "Approx-Symmdc", ""),
+            ("EDGETHRU", "Edgethru", ""),
+            ("LEMON", "Lemon", ""),
+            ("NODETHRU", "Nodethru", ""),
+        ),
+        default="DEFAULT",
+    )
+    callback_time_limit: FloatVectorProperty(
+        name="Callback Time Limit",
+        size=8,
+        default=(3.0, 5.0, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0),
+    )
+    callback_gap_limit: FloatVectorProperty(
+        name="Callback Gap Limit",
+        size=8,
+        precision=3,
+        default=(0.005, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.3),
+    )
+
+
 class HALLWAYAVATAR_PG_state(PropertyGroup):
     source_psd_path: StringProperty(name="PSD Path", subtype="FILE_PATH")
     imported_collection_name: StringProperty(name="Imported Collection", default="Hallway Avatar Layers")
@@ -56,15 +135,18 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     replace_existing: BoolProperty(name="Replace Existing Output", default=True)
     auto_bind_on_build: BoolProperty(name="Auto Bind On Build", default=True)
     imported_count: IntProperty(name="Imported Count")
+    remeshed_count: IntProperty(name="Remeshed Count")
     skipped_count: IntProperty(name="Skipped Count")
     classified_count: IntProperty(name="Classified Count")
     active_layer_index: IntProperty(name="Active Layer Index")
     last_report: StringProperty(name="Last Report")
     layer_items: CollectionProperty(type=HALLWAYAVATAR_PG_layer_item)
+    qremesh_settings: PointerProperty(type=HALLWAYAVATAR_PG_qremesh_settings)
 
 
 classes = (
     HALLWAYAVATAR_PG_layer_item,
+    HALLWAYAVATAR_PG_qremesh_settings,
     HALLWAYAVATAR_PG_state,
 )
 
