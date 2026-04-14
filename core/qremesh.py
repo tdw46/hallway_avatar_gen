@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import stat
 import subprocess
 import tempfile
@@ -11,10 +12,12 @@ from statistics import median
 
 import bmesh
 import bpy
+from mathutils import Vector
 
 from ..utils import paths
 from ..utils.logging import get_logger
 from .models import LayerPart
+from . import seethrough_naming
 
 logger = get_logger("qremesh")
 
@@ -26,6 +29,20 @@ class QRemeshError(RuntimeError):
 class QRemeshSettings:
     auto_on_import: bool = False
     target_quad_count: int = 5000
+    unsubdivide_iterations: int = 2
+    unsubdivide_target_count: int = 1400
+    remesh_front_hair: bool = True
+    remesh_back_hair: bool = True
+    remesh_face_head: bool = False
+    remesh_topwear: bool = False
+    remesh_handwear: bool = False
+    remesh_bottomwear: bool = False
+    remesh_legwear: bool = False
+    remesh_footwear: bool = False
+    remesh_tail: bool = False
+    remesh_wings: bool = False
+    remesh_objects: bool = False
+    remesh_unclassified: bool = False
     target_count_as_input_percentage: bool = False
     target_edge_length: float = 0.0
     adaptive_size: float = 50.0
@@ -44,6 +61,20 @@ class QRemeshSettings:
         return cls(
             auto_on_import=props.auto_on_import,
             target_quad_count=props.target_quad_count,
+            unsubdivide_iterations=props.unsubdivide_iterations,
+            unsubdivide_target_count=props.unsubdivide_target_count,
+            remesh_front_hair=props.remesh_front_hair,
+            remesh_back_hair=props.remesh_back_hair,
+            remesh_face_head=props.remesh_face_head,
+            remesh_topwear=props.remesh_topwear,
+            remesh_handwear=props.remesh_handwear,
+            remesh_bottomwear=props.remesh_bottomwear,
+            remesh_legwear=props.remesh_legwear,
+            remesh_footwear=props.remesh_footwear,
+            remesh_tail=props.remesh_tail,
+            remesh_wings=props.remesh_wings,
+            remesh_objects=props.remesh_objects,
+            remesh_unclassified=props.remesh_unclassified,
             target_count_as_input_percentage=props.target_count_as_input_percentage,
             target_edge_length=props.target_edge_length,
             adaptive_size=props.adaptive_size,
@@ -194,6 +225,106 @@ def _sanitize_bmesh_for_qremesh(bm: bmesh.types.BMesh) -> None:
     loose_verts = [vert for vert in bm.verts if not vert.link_faces]
     if loose_verts:
         bmesh.ops.delete(bm, geom=loose_verts, context="VERTS")
+
+
+def _duplicate_object_for_export(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+) -> bpy.types.Object:
+    export_obj = source_obj.copy()
+    export_obj.data = source_obj.data.copy()
+    export_obj.animation_data_clear()
+    export_obj.name = f"{source_obj.name}__hallway_qmesh_export"
+    export_obj.data.name = f"{source_obj.data.name}__hallway_qmesh_export"
+    target_collections = list(source_obj.users_collection) or [context.scene.collection]
+    for collection in target_collections:
+        collection.objects.link(export_obj)
+    export_obj.matrix_world = source_obj.matrix_world.copy()
+    return export_obj
+
+
+def _cleanup_export_duplicate(export_obj: bpy.types.Object | None) -> None:
+    if export_obj is None or export_obj.name not in bpy.data.objects:
+        return
+    mesh = export_obj.data if export_obj.type == "MESH" else None
+    bpy.data.objects.remove(export_obj, do_unlink=True)
+    if mesh is not None and mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+
+
+def _strip_import_prefix(name: str) -> str:
+    return re.sub(r"^\d+[_\-\s]+", "", name or "").strip()
+
+
+def _canonical_remesh_token(part: LayerPart) -> str:
+    layer_name = _strip_import_prefix(part.layer_name)
+    object_name = _strip_import_prefix(part.imported_object_name)
+
+    for candidate_name, candidate_path in (
+        (layer_name, part.layer_path),
+        (object_name, ""),
+    ):
+        token, _, _ = seethrough_naming.classify_name(candidate_name, candidate_path)
+        if token:
+            return token
+
+    if part.semantic_label == "hair_front":
+        return "front hair"
+    if part.semantic_label == "hair_back":
+        return "back hair"
+    if part.semantic_label == "torso":
+        return "topwear"
+    if part.semantic_label == "pelvis":
+        return "bottomwear"
+    if part.semantic_label.startswith("arm"):
+        return "handwear"
+    if part.semantic_label.startswith("leg"):
+        return "legwear"
+    if part.semantic_label.startswith("foot"):
+        return "footwear"
+    if part.semantic_label == "head":
+        return "face"
+    if part.semantic_label == "tail":
+        return "tail"
+    if part.semantic_label == "wings":
+        return "wings"
+    if part.semantic_label == "accessory":
+        return "objects"
+    return ""
+
+
+def _remesh_filter_enabled(settings: QRemeshSettings, token: str) -> bool:
+    mapping = {
+        "front hair": settings.remesh_front_hair,
+        "back hair": settings.remesh_back_hair,
+        "face": settings.remesh_face_head,
+        "headwear": settings.remesh_face_head,
+        "irides": settings.remesh_face_head,
+        "eyebrow": settings.remesh_face_head,
+        "eyewhite": settings.remesh_face_head,
+        "eyelash": settings.remesh_face_head,
+        "eyewear": settings.remesh_face_head,
+        "ears": settings.remesh_face_head,
+        "earwear": settings.remesh_face_head,
+        "nose": settings.remesh_face_head,
+        "mouth": settings.remesh_face_head,
+        "topwear": settings.remesh_topwear,
+        "neck": settings.remesh_topwear,
+        "handwear": settings.remesh_handwear,
+        "bottomwear": settings.remesh_bottomwear,
+        "legwear": settings.remesh_legwear,
+        "footwear": settings.remesh_footwear,
+        "tail": settings.remesh_tail,
+        "wings": settings.remesh_wings,
+        "objects": settings.remesh_objects,
+    }
+    if not token:
+        return settings.remesh_unclassified
+    return mapping.get(token, settings.remesh_unclassified)
+
+
+def _should_remesh_part(part: LayerPart, settings: QRemeshSettings) -> bool:
+    return _remesh_filter_enabled(settings, _canonical_remesh_token(part))
 
 
 def _effective_target_quad_count(stats: dict[str, object], settings: QRemeshSettings) -> int:
@@ -369,6 +500,81 @@ def _import_runtime_result(context: bpy.types.Context, filepath: Path) -> tuple[
         raise
 
 
+def _unsubdivide_mesh(
+    context: bpy.types.Context,
+    obj: bpy.types.Object,
+    *,
+    iterations: int = 2,
+    target_count: int = 1400,
+) -> None:
+    if obj.type != "MESH" or len(obj.data.polygons) == 0 or iterations <= 0:
+        return
+    face_count_before = len(obj.data.polygons)
+    vertex_count_before = len(obj.data.vertices)
+    total_iterations = 0
+    target_count = max(1, int(target_count))
+    max_iterations = 32
+
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        if not bm.verts:
+            logger.info("Un-subdivide skipped for %s because it has no vertices", obj.name)
+            return
+
+        def _current_counts() -> tuple[int, int]:
+            bm.verts.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+            return (len(bm.verts), len(bm.faces))
+
+        while total_iterations < iterations:
+            verts_before_step, faces_before_step = _current_counts()
+            bmesh.ops.unsubdivide(bm, verts=bm.verts[:], iterations=1)
+            total_iterations += 1
+            verts_after_step, faces_after_step = _current_counts()
+            if (verts_after_step, faces_after_step) == (verts_before_step, faces_before_step):
+                break
+
+        while total_iterations < max_iterations:
+            current_verts, current_faces = _current_counts()
+            if current_verts <= target_count and current_faces <= target_count:
+                break
+            bmesh.ops.unsubdivide(bm, verts=bm.verts[:], iterations=1)
+            total_iterations += 1
+            next_verts, next_faces = _current_counts()
+            if (next_verts, next_faces) == (current_verts, current_faces):
+                break
+
+        bm.to_mesh(obj.data)
+        obj.data.update()
+    finally:
+        bm.free()
+
+    face_count_after = len(obj.data.polygons)
+    vertex_count_after = len(obj.data.vertices)
+    obj["hallway_avatar_unsubdivide_iterations_requested"] = int(iterations)
+    obj["hallway_avatar_unsubdivide_iterations"] = int(total_iterations)
+    obj["hallway_avatar_unsubdivide_target_count"] = int(target_count)
+    obj["hallway_avatar_unsubdivide_faces_before"] = int(face_count_before)
+    obj["hallway_avatar_unsubdivide_faces_after"] = int(face_count_after)
+    obj["hallway_avatar_unsubdivide_vertices_before"] = int(vertex_count_before)
+    obj["hallway_avatar_unsubdivide_vertices_after"] = int(vertex_count_after)
+    logger.info(
+        "Un-subdivide %s -> requested=%s applied=%s target=%s faces %s->%s verts %s->%s",
+        obj.name,
+        iterations,
+        total_iterations,
+        target_count,
+        face_count_before,
+        face_count_after,
+        vertex_count_before,
+        vertex_count_after,
+    )
+
+
 def _rehome_imported_result(
     context: bpy.types.Context,
     imported_objects: list[bpy.types.Object],
@@ -422,7 +628,7 @@ def _apply_data_transfer_modifier(
             if active_source_uv is not None:
                 modifier.layers_uv_select_src = active_source_uv.name
                 modifier.layers_uv_select_dst = target_obj.data.uv_layers[0].name
-            modifier.loop_mapping = "POLYINTERP_NEAREST"
+            modifier.loop_mapping = "POLYINTERP_LNORPROJ"
         if transfer_vertex_groups:
             for source_group in source_obj.vertex_groups:
                 if target_obj.vertex_groups.get(source_group.name) is None:
@@ -431,7 +637,7 @@ def _apply_data_transfer_modifier(
             modifier.data_types_verts = {"VGROUP_WEIGHTS"}
             modifier.layers_vgroup_select_src = "ALL"
             modifier.layers_vgroup_select_dst = "NAME"
-            modifier.vert_mapping = "POLYINTERP_NEAREST"
+            modifier.vert_mapping = "POLYINTERP_VNORPROJ"
         bpy.ops.object.modifier_apply(modifier=modifier.name)
     finally:
         bpy.ops.object.select_all(action="DESELECT")
@@ -440,6 +646,146 @@ def _apply_data_transfer_modifier(
                 selected.select_set(True)
         if previous_active and previous_active.name in bpy.data.objects:
             context.view_layer.objects.active = previous_active
+
+
+def _solve_linear_3x3(system: list[list[float]], values: list[float]) -> tuple[float, float, float] | None:
+    rows = [system[index][:] + [values[index]] for index in range(3)]
+    for pivot_index in range(3):
+        pivot_row = max(range(pivot_index, 3), key=lambda row_index: abs(rows[row_index][pivot_index]))
+        pivot_value = rows[pivot_row][pivot_index]
+        if abs(pivot_value) <= 1e-12:
+            return None
+        if pivot_row != pivot_index:
+            rows[pivot_index], rows[pivot_row] = rows[pivot_row], rows[pivot_index]
+        pivot_value = rows[pivot_index][pivot_index]
+        for column in range(pivot_index, 4):
+            rows[pivot_index][column] /= pivot_value
+        for row_index in range(3):
+            if row_index == pivot_index:
+                continue
+            factor = rows[row_index][pivot_index]
+            if abs(factor) <= 1e-12:
+                continue
+            for column in range(pivot_index, 4):
+                rows[row_index][column] -= factor * rows[pivot_index][column]
+    return (rows[0][3], rows[1][3], rows[2][3])
+
+
+def _fit_affine_plane_map(samples: list[tuple[float, float, float]]) -> tuple[float, float, float] | None:
+    if len(samples) < 3:
+        return None
+
+    ata = [
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+    ]
+    atb = [0.0, 0.0, 0.0]
+    for coord_a, coord_b, value in samples:
+        vec = (coord_a, coord_b, 1.0)
+        for row in range(3):
+            atb[row] += vec[row] * value
+            for col in range(3):
+                ata[row][col] += vec[row] * vec[col]
+    return _solve_linear_3x3(ata, atb)
+
+
+def _fit_linear_axis_map(samples: list[tuple[float, float]]) -> tuple[float, float] | None:
+    if len(samples) < 2:
+        return None
+    sum_coord = 0.0
+    sum_value = 0.0
+    sum_coord_sq = 0.0
+    sum_coord_value = 0.0
+    count = float(len(samples))
+    for coord, value in samples:
+        sum_coord += coord
+        sum_value += value
+        sum_coord_sq += coord * coord
+        sum_coord_value += coord * value
+    denominator = (count * sum_coord_sq) - (sum_coord * sum_coord)
+    if abs(denominator) <= 1e-12:
+        return None
+    slope = ((count * sum_coord_value) - (sum_coord * sum_value)) / denominator
+    intercept = (sum_value - (slope * sum_coord)) / count
+    return (slope, intercept)
+
+
+def _mesh_plane_axes_world(source_obj: bpy.types.Object) -> tuple[int, int]:
+    if len(source_obj.data.vertices) < 2:
+        return (0, 1)
+    world_coords = [source_obj.matrix_world @ vert.co for vert in source_obj.data.vertices]
+    spans = []
+    for axis_index in range(3):
+        axis_values = [coord[axis_index] for coord in world_coords]
+        spans.append(max(axis_values) - min(axis_values))
+    sorted_axes = sorted(range(3), key=lambda axis_index: spans[axis_index], reverse=True)
+    return (sorted_axes[0], sorted_axes[1])
+
+
+def _project_flat_uvs_from_source(source_obj: bpy.types.Object, target_obj: bpy.types.Object) -> bool:
+    if source_obj.type != "MESH" or target_obj.type != "MESH":
+        return False
+    if not source_obj.data.uv_layers:
+        return False
+    if len(source_obj.data.loops) == 0 or len(target_obj.data.loops) == 0:
+        return False
+
+    plane_axis_a, plane_axis_b = _mesh_plane_axes_world(source_obj)
+    source_world = [source_obj.matrix_world @ vert.co for vert in source_obj.data.vertices]
+    target_world = [target_obj.matrix_world @ vert.co for vert in target_obj.data.vertices]
+
+    success = False
+    while len(target_obj.data.uv_layers) < len(source_obj.data.uv_layers):
+        target_obj.data.uv_layers.new(name=source_obj.data.uv_layers[len(target_obj.data.uv_layers)].name)
+
+    for layer_index, source_uv_layer in enumerate(source_obj.data.uv_layers):
+        target_uv_layer = target_obj.data.uv_layers[layer_index]
+        source_samples_u: list[tuple[float, float, float]] = []
+        source_samples_v: list[tuple[float, float, float]] = []
+        axis_samples_u: list[tuple[float, float]] = []
+        axis_samples_v: list[tuple[float, float]] = []
+        uv_values = [loop_data.uv.copy() for loop_data in source_uv_layer.data]
+        uv_min = Vector((min(uv.x for uv in uv_values), min(uv.y for uv in uv_values)))
+        uv_max = Vector((max(uv.x for uv in uv_values), max(uv.y for uv in uv_values)))
+
+        for loop in source_obj.data.loops:
+            world_co = source_world[loop.vertex_index]
+            coord_a = float(world_co[plane_axis_a])
+            coord_b = float(world_co[plane_axis_b])
+            uv = source_uv_layer.data[loop.index].uv
+            source_samples_u.append((coord_a, coord_b, float(uv.x)))
+            source_samples_v.append((coord_a, coord_b, float(uv.y)))
+            axis_samples_u.append((coord_a, float(uv.x)))
+            axis_samples_v.append((coord_b, float(uv.y)))
+
+        coeff_u = _fit_affine_plane_map(source_samples_u)
+        coeff_v = _fit_affine_plane_map(source_samples_v)
+        if coeff_u is None or coeff_v is None:
+            linear_u = _fit_linear_axis_map(axis_samples_u)
+            linear_v = _fit_linear_axis_map(axis_samples_v)
+            if linear_u is None or linear_v is None:
+                continue
+            coeff_u = (linear_u[0], 0.0, linear_u[1])
+            coeff_v = (0.0, linear_v[0], linear_v[1])
+
+        for loop in target_obj.data.loops:
+            world_co = target_world[loop.vertex_index]
+            coord_a = float(world_co[plane_axis_a])
+            coord_b = float(world_co[plane_axis_b])
+            u_value = (coeff_u[0] * coord_a) + (coeff_u[1] * coord_b) + coeff_u[2]
+            v_value = (coeff_v[0] * coord_a) + (coeff_v[1] * coord_b) + coeff_v[2]
+            target_uv_layer.data[loop.index].uv = Vector((
+                min(max(u_value, uv_min.x), uv_max.x),
+                min(max(v_value, uv_min.y), uv_max.y),
+            ))
+        target_uv_layer.name = source_uv_layer.name
+        success = True
+
+    if success:
+        target_obj.data.uv_layers.active_index = source_obj.data.uv_layers.active_index
+        logger.info("Projected flat UVs from %s to %s", source_obj.name, target_obj.name)
+    return success
 
 
 def _copy_modifiers(context: bpy.types.Context, source_obj: bpy.types.Object, target_obj: bpy.types.Object) -> None:
@@ -544,7 +890,8 @@ def _replace_source_object(
     _copy_custom_properties(source_obj, new_obj)
     _copy_display_settings(source_obj, new_obj)
     if source_obj.data and source_obj.data.uv_layers:
-        _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_uvs=True)
+        if not _project_flat_uvs_from_source(source_obj, new_obj):
+            _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_uvs=True)
         _prune_uv_layers(source_obj, new_obj)
     if source_obj.vertex_groups:
         _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_vertex_groups=True)
@@ -586,9 +933,13 @@ def remesh_object(
         settings_path = temp_root / "RetopoSettings.txt"
 
         stats = _mesh_debug_stats_for_object(context, source_obj)
-        _export_object_to_fbx(context, source_obj, input_fbx)
-
         target_quad_count = _effective_target_quad_count(stats, settings)
+        export_obj = _duplicate_object_for_export(context, source_obj)
+        try:
+            _export_object_to_fbx(context, export_obj, input_fbx)
+        finally:
+            _cleanup_export_duplicate(export_obj)
+
         _write_runtime_settings(
             settings_path=settings_path,
             input_fbx=input_fbx,
@@ -632,6 +983,12 @@ def remesh_object(
         imported_objects, remeshed_obj = _import_runtime_result(context, output_fbx)
         _rehome_imported_result(context, imported_objects, remeshed_obj, collection_targets)
         remeshed_obj.matrix_world = source_matrix_world
+        _unsubdivide_mesh(
+            context,
+            remeshed_obj,
+            iterations=settings.unsubdivide_iterations,
+            target_count=settings.unsubdivide_target_count,
+        )
 
     replaced = _replace_source_object(context, source_obj, remeshed_obj, settings)
     logger.info("Quad Remesher replaced %s with %s", source_name, replaced.name)
@@ -646,7 +1003,11 @@ def remesh_parts(
     only_selected: bool = False,
 ) -> int:
     selected_names = {obj.name for obj in context.selected_objects}
-    candidate_parts = [part for part in parts if not part.skipped and part.imported_object_name]
+    candidate_parts = [
+        part
+        for part in parts
+        if not part.skipped and part.imported_object_name and _should_remesh_part(part, settings)
+    ]
     if only_selected:
         intersected = [part for part in candidate_parts if part.imported_object_name in selected_names]
         if intersected:
