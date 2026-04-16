@@ -195,7 +195,7 @@ class HALLWAYAVATAR_PT_main(Panel):
             advanced_top.label(text="See-through categories to quad remesh")
             _draw_reset_button(advanced_top, "remesh_filters")
             advanced_panel.separator()
-            advanced_panel.label(text="By default, only front and back hair layers are remeshed.")
+            advanced_panel.label(text="By default, front hair, back hair, topwear, handwear, legwear, and footwear are remeshed.")
             advanced_panel.separator()
             hair_box = advanced_panel.box()
             _draw_group_title(hair_box, "Hair", icon="USER")

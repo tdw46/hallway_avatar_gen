@@ -47,6 +47,23 @@ def build_armature(
             edit_bones[bone_plan.name].use_connect = bone_plan.connected
 
     bpy.ops.object.mode_set(mode="OBJECT")
+    bone_collections: dict[str, bpy.types.BoneCollection] = {}
+    collection_names = list(rig_plan.bone_collection_names)
+    for bone_plan in rig_plan.bones.values():
+        if bone_plan.collection_name and bone_plan.collection_name not in collection_names:
+            collection_names.append(bone_plan.collection_name)
+    for collection_name in collection_names:
+        collection = armature_data.collections.get(collection_name)
+        if collection is None:
+            collection = armature_data.collections.new(collection_name)
+        bone_collections[collection_name] = collection
+    for bone_plan in rig_plan.bones.values():
+        collection_name = bone_plan.collection_name or "Body"
+        bone = armature_data.bones.get(bone_plan.name)
+        collection = bone_collections.get(collection_name)
+        if bone is not None and collection is not None:
+            collection.assign(bone)
+
     armature_obj["hallway_avatar_edit_bone_offset_x"] = bone_offset.x
     armature_obj["hallway_avatar_edit_bone_offset_y"] = bone_offset.y
     armature_obj["hallway_avatar_edit_bone_offset_z"] = bone_offset.z

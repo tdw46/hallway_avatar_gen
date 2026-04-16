@@ -20,6 +20,7 @@ from .models import LayerPart
 from . import seethrough_naming
 
 logger = get_logger("qremesh")
+_BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.(?P<suffix>\d{3})$")
 
 class QRemeshError(RuntimeError):
     pass
@@ -34,11 +35,11 @@ class QRemeshSettings:
     remesh_front_hair: bool = True
     remesh_back_hair: bool = True
     remesh_face_head: bool = False
-    remesh_topwear: bool = False
-    remesh_handwear: bool = False
+    remesh_topwear: bool = True
+    remesh_handwear: bool = True
     remesh_bottomwear: bool = False
-    remesh_legwear: bool = False
-    remesh_footwear: bool = False
+    remesh_legwear: bool = True
+    remesh_footwear: bool = True
     remesh_tail: bool = False
     remesh_wings: bool = False
     remesh_objects: bool = False
@@ -800,6 +801,8 @@ def _copy_modifiers(context: bpy.types.Context, source_obj: bpy.types.Object, ta
         target_obj.select_set(True)
         context.view_layer.objects.active = source_obj
         for modifier in source_obj.modifiers:
+            if modifier.type == "ARMATURE":
+                continue
             bpy.ops.object.modifier_copy_to_selected(modifier=modifier.name)
     finally:
         bpy.ops.object.select_all(action="DESELECT")
@@ -815,6 +818,54 @@ def _copy_material_slots(source_obj: bpy.types.Object, target_obj: bpy.types.Obj
     for material in source_obj.data.materials:
         target_obj.data.materials.append(material)
     target_obj.active_material_index = source_obj.active_material_index
+
+
+def _material_images(material: bpy.types.Material | None) -> set[bpy.types.Image]:
+    images: set[bpy.types.Image] = set()
+    if material is None or not material.use_nodes or material.node_tree is None:
+        return images
+    for node in material.node_tree.nodes:
+        image = getattr(node, "image", None)
+        if image is not None:
+            images.add(image)
+    return images
+
+
+def _strip_duplicate_suffix(name: str) -> str:
+    match = _BLENDER_DUPLICATE_SUFFIX_RE.match(name)
+    if match:
+        return match.group("base")
+    return name
+
+
+def _cleanup_transient_materials(materials: list[bpy.types.Material]) -> None:
+    for material in materials:
+        if material is None or material.name not in bpy.data.materials:
+            continue
+        if material.users == 0:
+            bpy.data.materials.remove(material)
+
+
+def _cleanup_duplicate_images_for_materials(materials: list[bpy.types.Material]) -> None:
+    final_image_bases = {
+        _strip_duplicate_suffix(image.name)
+        for material in materials
+        for image in _material_images(material)
+    }
+    if not final_image_bases:
+        return
+
+    for image in list(bpy.data.images):
+        if image is None:
+            continue
+        base_name = _strip_duplicate_suffix(image.name)
+        if base_name == image.name or base_name not in final_image_bases:
+            continue
+        if image.use_fake_user and image.users <= 1:
+            image.use_fake_user = False
+        if image.users == 0:
+            logger.info("Removed duplicate remesh image datablock %s because final materials already use %s", image.name, base_name)
+            bpy.data.images.remove(image)
 
 
 def _copy_input_shading(source_obj: bpy.types.Object, target_obj: bpy.types.Object) -> None:
@@ -885,6 +936,7 @@ def _replace_source_object(
     original_mesh_name = source_obj.data.name if source_obj.data else f"{original_name}_mesh"
     source_was_selected = source_obj.select_get()
     source_was_active = context.view_layer.objects.active == source_obj
+    transient_materials = [material for material in new_obj.data.materials if material is not None]
     _copy_material_slots(source_obj, new_obj)
     _copy_input_shading(source_obj, new_obj)
     _copy_custom_properties(source_obj, new_obj)
@@ -901,6 +953,8 @@ def _replace_source_object(
     new_obj.name = original_name
     new_obj.data.name = original_mesh_name
     new_obj["hallway_avatar_qremeshed"] = True
+    _cleanup_transient_materials(transient_materials)
+    _cleanup_duplicate_images_for_materials([material for material in new_obj.data.materials if material is not None])
     new_obj.select_set(source_was_selected)
     if source_was_active or context.view_layer.objects.active is None:
         context.view_layer.objects.active = new_obj

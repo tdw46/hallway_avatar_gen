@@ -64,11 +64,11 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
             remesh.remesh_front_hair = True
             remesh.remesh_back_hair = True
             remesh.remesh_face_head = False
-            remesh.remesh_topwear = False
-            remesh.remesh_handwear = False
+            remesh.remesh_topwear = True
+            remesh.remesh_handwear = True
             remesh.remesh_bottomwear = False
-            remesh.remesh_legwear = False
-            remesh.remesh_footwear = False
+            remesh.remesh_legwear = True
+            remesh.remesh_footwear = True
             remesh.remesh_tail = False
             remesh.remesh_wings = False
             remesh.remesh_objects = False

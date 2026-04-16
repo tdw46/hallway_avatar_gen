@@ -10,16 +10,41 @@ from .voxel_binding import VoxelBindingSettings, run_voxel_heat_diffuse
 
 logger = get_logger("weighting")
 
-HAIR_SMOOTH_REPEAT = 5000
+HAIR_SMOOTH_REPEAT = 80
 OTHER_SMOOTH_REPEAT = 100
 HAIR_BONE_PREFIXES = ("front_hair_", "back_hair_")
+HEAD_PRIORITY_TOKENS = {
+    "topwear",
+    "face",
+    "ears",
+    "earwear",
+    "mouth",
+    "nose",
+    "eyewhite",
+    "eyelash",
+    "eyebrow",
+    "eyewear",
+    "headwear",
+}
 
 
 def _ensure_armature_modifier(obj: bpy.types.Object, armature_obj: bpy.types.Object) -> None:
-    modifier = obj.modifiers.get("HallwayAvatarArmature")
-    if modifier is None:
-        modifier = obj.modifiers.new("HallwayAvatarArmature", "ARMATURE")
-    modifier.object = armature_obj
+    armature_modifiers = [modifier for modifier in obj.modifiers if modifier.type == "ARMATURE"]
+    preferred = obj.modifiers.get("HallwayAvatarArmature")
+    if preferred is None:
+        preferred = next(
+            (modifier for modifier in armature_modifiers if getattr(modifier, "object", None) == armature_obj),
+            armature_modifiers[0] if armature_modifiers else None,
+        )
+    if preferred is None:
+        preferred = obj.modifiers.new("HallwayAvatarArmature", "ARMATURE")
+    preferred.name = "HallwayAvatarArmature"
+    preferred.object = armature_obj
+
+    for modifier in list(obj.modifiers):
+        if modifier.type != "ARMATURE" or modifier == preferred:
+            continue
+        obj.modifiers.remove(modifier)
 
 
 def _clear_generated_groups(obj: bpy.types.Object, armature_obj: bpy.types.Object) -> None:
@@ -191,6 +216,8 @@ def _override_head_weights(
     obj: bpy.types.Object,
     armature_obj: bpy.types.Object,
     bone_names: tuple[str, ...],
+    *,
+    mode: str = "region",
 ) -> None:
     if "head" not in bone_names or armature_obj.data.bones.get("head") is None:
         return
@@ -204,9 +231,17 @@ def _override_head_weights(
     head_threshold_z = (armature_obj.matrix_world @ armature_obj.data.bones["head"].head_local).z
 
     for vertex in obj.data.vertices:
-        world_z = (obj.matrix_world @ vertex.co).z
-        if world_z < head_threshold_z:
-            continue
+        if mode == "head_weight":
+            try:
+                head_weight = head_group.weight(vertex.index)
+            except RuntimeError:
+                head_weight = 0.0
+            if head_weight <= 1e-6:
+                continue
+        else:
+            world_z = (obj.matrix_world @ vertex.co).z
+            if world_z < head_threshold_z:
+                continue
         head_group.add([vertex.index], 1.0, "REPLACE")
         for group in other_groups:
             group.add([vertex.index], 0.0, "REPLACE")
@@ -230,6 +265,7 @@ def bind_parts(
             continue
 
         auto_bones = rig_plan.layer_auto_weight_bones.get(part.layer_path)
+        token = heuristic_rigger._canonical_token(part)
         if auto_bones:
             filtered_auto_bones = _filtered_bone_names_for_part(part, armature_obj, auto_bones)
             success = _apply_voxel_weights(context, part, obj, armature_obj, filtered_auto_bones)
@@ -237,10 +273,12 @@ def bind_parts(
                 _smooth_weights(
                     context,
                     obj,
-                    HAIR_SMOOTH_REPEAT if heuristic_rigger._canonical_token(part) in {"front hair", "back hair"} else OTHER_SMOOTH_REPEAT,
+                    HAIR_SMOOTH_REPEAT if token in {"front hair", "back hair"} else OTHER_SMOOTH_REPEAT,
                 )
-                if heuristic_rigger._canonical_token(part) == "topwear":
+                if token == "topwear":
                     _override_head_weights(obj, armature_obj, filtered_auto_bones)
+                elif token in HEAD_PRIORITY_TOKENS:
+                    _override_head_weights(obj, armature_obj, filtered_auto_bones, mode="head_weight")
                 continue
 
         _ensure_armature_modifier(obj, armature_obj)

@@ -38,6 +38,7 @@ class BonePlan:
     parent: str | None = None
     connected: bool = False
     deform: bool = True
+    collection_name: str = "Body"
 
 
 @dataclass
@@ -50,3 +51,4 @@ class RigPlan:
     layer_auto_weight_bones: dict[str, tuple[str, ...]] = field(default_factory=dict)
     joint_pixels: dict[str, tuple[float, float]] = field(default_factory=dict)
     group_states: dict[str, str] = field(default_factory=dict)
+    bone_collection_names: tuple[str, ...] = field(default_factory=tuple)

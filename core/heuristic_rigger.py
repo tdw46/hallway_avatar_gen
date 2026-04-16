@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import ceil, floor, hypot
+
 from .models import BonePlan, LayerPart, RigPlan
 from . import seethrough_naming
 
@@ -46,7 +48,9 @@ HEAD_TOKENS = {
 IRIS_TOKENS = {"irides"}
 BODY_UPWARD_BONES = {"root", "hips", "torso", "spine", "neck", "head", "eyes"}
 DOWNWARD_BONES = {"front_hair", "back_hair", "leftArm", "rightArm", "leftElbow", "rightElbow", "bothArms", "leftLeg", "rightLeg", "leftKnee", "rightKnee", "bothLegs"}
-HAIR_CHAIN_LENGTH = 5
+HAIR_SEGMENT_MIN_FACE_RATIO = 1.0 / 2.0
+HAIR_SEGMENT_MAX_FACE_RATIO = 3.0 / 4.0
+DEFAULT_BONE_COLLECTIONS = ("Body", "Face", "Hair", "Arms", "Legs", "Objects")
 
 
 def _is_body_upward_bone(name: str) -> bool:
@@ -362,6 +366,44 @@ def _subdivide_chain(
     ]
 
 
+def _distance_2d(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return hypot(b[0] - a[0], b[1] - a[1])
+
+
+def _hair_chain_length(total_length: float, face_bone_length: float) -> int:
+    if total_length <= 1e-6:
+        return 1
+
+    reference_length = max(face_bone_length, 1.0)
+    min_segment = reference_length * HAIR_SEGMENT_MIN_FACE_RATIO
+    max_segment = reference_length * HAIR_SEGMENT_MAX_FACE_RATIO
+    if min_segment <= 1e-6 or max_segment <= 1e-6:
+        return 1
+
+    min_segments = max(1, ceil(total_length / max_segment))
+    max_segments = max(1, floor(total_length / min_segment))
+    target_segment = (min_segment + max_segment) * 0.5
+    target_segments = max(1, round(total_length / max(target_segment, 1e-6)))
+
+    if min_segments <= max_segments:
+        return max(min_segments, min(target_segments, max_segments))
+    if total_length < min_segment:
+        return 1
+    return min_segments
+
+
+def _bone_collection_name(name: str) -> str:
+    if name.startswith("front_hair_") or name.startswith("back_hair_") or name in {"front_hair", "back_hair"}:
+        return "Hair"
+    if name in {"head", "eyes"}:
+        return "Face"
+    if name in {"leftArm", "rightArm", "leftElbow", "rightElbow", "bothArms"}:
+        return "Arms"
+    if name in {"leftLeg", "rightLeg", "leftKnee", "rightKnee", "bothLegs"}:
+        return "Legs"
+    return "Body"
+
+
 def estimate_rig(parts: list[LayerPart]) -> RigPlan:
     visible = _visible_parts(parts)
     if not visible:
@@ -482,7 +524,14 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
     hair_chain_map: dict[str, tuple[str, ...]] = {}
     bones: dict[str, BonePlan] = {}
 
-    def add_bone(name: str, head_xy: tuple[float, float], tail_xy: tuple[float, float], parent: str | None) -> None:
+    def add_bone(
+        name: str,
+        head_xy: tuple[float, float],
+        tail_xy: tuple[float, float],
+        parent: str | None,
+        *,
+        connected: bool = False,
+    ) -> None:
         if _is_body_upward_bone(name) and head_xy[1] < tail_xy[1]:
             head_xy, tail_xy = tail_xy, head_xy
         if _is_downward_bone(name) and head_xy[1] > tail_xy[1]:
@@ -492,6 +541,8 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
             head=_pixel_to_plane(head_xy[0], head_xy[1], canvas_size),
             tail=_pixel_to_plane(tail_xy[0], tail_xy[1], canvas_size),
             parent=parent,
+            connected=connected,
+            collection_name=_bone_collection_name(name),
         )
 
     for bone_name in create_order:
@@ -501,24 +552,30 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
         tail_xy = _tail_target(bone_name, pivot_points | keypoints, canvas_size)
         add_bone(bone_name, head_xy, tail_xy, parent_lookup[bone_name])
 
+    face_reference_length = _distance_2d(pivot_points["head"], _tail_target("head", pivot_points | keypoints, canvas_size))
+    if face_reference_length <= 1e-6:
+        face_reference_length = max(visible[0].canvas_size[1] * 0.08, 1.0)
+
     if need_group["front_hair"]:
-        points = _subdivide_chain(front_hair_head, front_hair_tail, HAIR_CHAIN_LENGTH)
+        front_segments = _hair_chain_length(_distance_2d(front_hair_head, front_hair_tail), face_reference_length)
+        points = _subdivide_chain(front_hair_head, front_hair_tail, front_segments)
         names: list[str] = []
         parent_name = "head"
-        for index in range(HAIR_CHAIN_LENGTH):
+        for index in range(front_segments):
             bone_name = f"front_hair_{index + 1:02d}"
-            add_bone(bone_name, points[index], points[index + 1], parent_name)
+            add_bone(bone_name, points[index], points[index + 1], parent_name, connected=index > 0)
             names.append(bone_name)
             parent_name = bone_name
         hair_chain_map["front_hair"] = tuple(names)
 
     if need_group["back_hair"]:
-        points = _subdivide_chain(back_hair_head, back_hair_tail, HAIR_CHAIN_LENGTH)
+        back_segments = _hair_chain_length(_distance_2d(back_hair_head, back_hair_tail), face_reference_length)
+        points = _subdivide_chain(back_hair_head, back_hair_tail, back_segments)
         names: list[str] = []
         parent_name = "head"
-        for index in range(HAIR_CHAIN_LENGTH):
+        for index in range(back_segments):
             bone_name = f"back_hair_{index + 1:02d}"
-            add_bone(bone_name, points[index], points[index + 1], parent_name)
+            add_bone(bone_name, points[index], points[index + 1], parent_name, connected=index > 0)
             names.append(bone_name)
             parent_name = bone_name
         hair_chain_map["back_hair"] = tuple(names)
@@ -553,4 +610,5 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
         layer_auto_weight_bones=layer_auto_weight_bones,
         joint_pixels=joint_pixels,
         group_states=group_states,
+        bone_collection_names=DEFAULT_BONE_COLLECTIONS,
     )
