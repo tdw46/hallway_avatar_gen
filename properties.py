@@ -173,7 +173,7 @@ class HALLWAYAVATAR_PG_qremesh_settings(PropertyGroup):
 
 
 class HALLWAYAVATAR_PG_state(PropertyGroup):
-    source_psd_path: StringProperty(name="PSD Path", subtype="FILE_PATH")
+    source_psd_path: StringProperty(name="PSD Path")
     imported_collection_name: StringProperty(name="Imported Collection", default="Hallway Avatar Layers")
     rig_collection_name: StringProperty(name="Rig Collection", default="Hallway Avatar Rig")
     armature_object_name: StringProperty(name="Armature Object")

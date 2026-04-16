@@ -152,6 +152,7 @@ class HALLWAYAVATAR_PT_main(Panel):
         if source_panel:
             source_row = source_panel.row(align=True)
             source_row.prop(state, "source_psd_path", text="")
+            source_row.operator("hallway_avatar.select_psd_path", text="", icon="FILE_FOLDER")
             source_row.popover(
                 panel="HALLWAYAVATAR_PT_import_popover",
                 text="",

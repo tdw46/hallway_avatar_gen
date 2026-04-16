@@ -25,6 +25,7 @@ MODULES = [
     "preferences",
     "operators.install_dependencies",
     "operators.import_psd",
+    "operators.select_psd_path",
     "operators.classify_parts",
     "operators.set_bool",
     "operators.reset_settings",
