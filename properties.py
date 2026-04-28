@@ -67,7 +67,7 @@ class HALLWAYAVATAR_PG_qremesh_settings(PropertyGroup):
     auto_on_import: BoolProperty(
         name="Auto Remesh On Import",
         description="Run quad remesh automatically after PSD layers are imported",
-        default=False,
+        default=True,
     )
     target_quad_count: IntProperty(name="Quad Count", default=3000, soft_min=100, soft_max=10000, min=1, step=20)
     unsubdivide_iterations: IntProperty(name="Un-Subdivide", default=2, min=0, max=8, soft_max=6)
@@ -189,6 +189,16 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     ignore_hidden_layers: BoolProperty(name="Ignore Hidden PSD Layers", description="Skip PSD layers that are hidden in the document", default=True)
     ignore_empty_layers: BoolProperty(name="Ignore Empty PSD Layers", description="Skip layers with no visible alpha after filtering", default=True)
     keep_tiny_named_parts: BoolProperty(name="Keep Tiny Named Parts", description="Keep very small named facial parts like mouth, nose, lashes, and irides", default=True)
+    import_facial_features: BoolProperty(
+        name="Import Facial Features",
+        description="Import face-detail layers such as ears, nose, eyes, brows, lashes, and mouth. The base Face layer still imports when this is OFF",
+        default=False,
+    )
+    auto_rig_on_import: BoolProperty(
+        name="Auto Rig On Import",
+        description="Build and bind the generated armature automatically after PSD import and optional remesh",
+        default=True,
+    )
     min_visible_pixels: IntProperty(name="Minimum Visible Pixels", min=0, default=8)
     alpha_noise_floor: IntProperty(name="Alpha Noise Floor", description="Treat layers below this maximum alpha value as transparent noise", min=0, max=255, default=64)
     visible_alpha_threshold: IntProperty(name="Visible Alpha Threshold", description="Base alpha cutoff for deciding which pixels count as visible", min=0, max=255, default=32)

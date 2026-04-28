@@ -13,6 +13,17 @@ from . import alpha_mesh_adapter, armature_builder, heuristic_rigger, mtoon_mate
 logger = get_logger("pipeline")
 ADDON_ID = env.addon_package_id(__package__)
 LAYER_DEPTH_STEP_METERS = 0.0005
+FACIAL_FEATURE_TOKENS = {
+    "ears",
+    "earwear",
+    "nose",
+    "mouth",
+    "eyewhite",
+    "irides",
+    "eyelash",
+    "eyebrow",
+    "eyewear",
+}
 
 
 def _cache_dir_from_context(context: bpy.types.Context) -> str:
@@ -63,6 +74,18 @@ def _apply_layer_depth_stack(parts: list, imported_objects: list[bpy.types.Objec
             depth_index,
             obj.location.y,
         )
+
+
+def _skip_facial_features_when_disabled(parts: list, import_facial_features: bool) -> None:
+    if import_facial_features:
+        return
+    for part in parts:
+        if part.skipped:
+            continue
+        if part.normalized_token not in FACIAL_FEATURE_TOKENS:
+            continue
+        part.skipped = True
+        part.skip_reason = "facial feature import disabled"
 
 
 def _lift_imported_meshes_to_ground(imported_objects: list[bpy.types.Object]) -> float:
@@ -118,6 +141,7 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
         configured_cache_dir=cache_dir,
     )
     part_classifier.classify_parts(parts)
+    _skip_facial_features_when_disabled(parts, state.import_facial_features)
 
     collection = blender_utils.clear_collection(state.imported_collection_name) if state.replace_existing else blender_utils.ensure_collection(state.imported_collection_name)
     imported_objects: list[bpy.types.Object] = []
@@ -162,11 +186,18 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
     state.source_psd_path = filepath
     properties.set_layer_items(scene, parts)
     state.remeshed_count = remeshed_count
+    import_report = ""
     if state.qremesh_settings.auto_on_import and imported_objects:
-        state.last_report = f"Imported {state.imported_count} layers, remeshed {state.remeshed_count}, skipped {state.skipped_count}"
+        import_report = f"Imported {state.imported_count} layers, remeshed {state.remeshed_count}, skipped {state.skipped_count}"
     else:
         state.remeshed_count = 0
-        state.last_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
+        import_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
+    state.last_report = import_report
+
+    if state.auto_rig_on_import and imported_objects:
+        armature_obj, rig_plan = build_armature_scene(context, bind_weights=state.auto_bind_on_build)
+        state.last_report = f"{import_report}; built {armature_obj.name} with {len(rig_plan.bones)} bones"
+
     logger.info(state.last_report)
     return parts
 

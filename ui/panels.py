@@ -164,6 +164,11 @@ class HALLWAYAVATAR_PT_main(Panel):
             import_button.operator("hallway_avatar.import_psd", icon="FILE_IMAGE")
             source_panel.separator()
             _draw_toggle_prop(source_panel, remesh, "scene.hallway_avatar_state.qremesh_settings", "auto_on_import")
+            _draw_toggle_prop(source_panel, state, state_path, "import_facial_features")
+            _draw_toggle_prop(source_panel, state, state_path, "auto_rig_on_import")
+            if state.last_report:
+                source_panel.separator()
+                source_panel.label(text=state.last_report, icon="INFO")
 
         if backend_status != "ready":
             backend_header, backend_panel = layout.panel_prop(state, "show_backend_section")

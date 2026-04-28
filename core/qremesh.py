@@ -28,8 +28,8 @@ class QRemeshError(RuntimeError):
 
 @dataclass(frozen=True)
 class QRemeshSettings:
-    auto_on_import: bool = False
-    target_quad_count: int = 5000
+    auto_on_import: bool = True
+    target_quad_count: int = 3000
     unsubdivide_iterations: int = 2
     unsubdivide_target_count: int = 1400
     remesh_front_hair: bool = True
@@ -44,9 +44,9 @@ class QRemeshSettings:
     remesh_wings: bool = False
     remesh_objects: bool = False
     remesh_unclassified: bool = False
-    target_count_as_input_percentage: bool = False
-    target_edge_length: float = 0.0
-    adaptive_size: float = 50.0
+    target_count_as_input_percentage: bool = True
+    target_edge_length: float = 0.02
+    adaptive_size: float = 100.0
     adapt_quad_count: bool = True
     use_vertex_color_map: bool = False
     use_materials: bool = False

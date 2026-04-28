@@ -35,6 +35,8 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
             state.mesh_grid_resolution = 12
             state.replace_existing = True
             state.auto_bind_on_build = True
+            state.import_facial_features = False
+            state.auto_rig_on_import = True
         elif self.group == "alpha_thresholds":
             state.alpha_noise_floor = 64
             state.visible_alpha_threshold = 32
@@ -43,7 +45,7 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
             state.trace_contrast_low = 0.1
             state.trace_contrast_high = 0.9
         elif self.group == "remesh_main":
-            remesh.auto_on_import = False
+            remesh.auto_on_import = True
             remesh.target_quad_count = 3000
             remesh.unsubdivide_iterations = 2
             remesh.unsubdivide_target_count = 1400
