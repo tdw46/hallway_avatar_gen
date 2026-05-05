@@ -138,6 +138,10 @@ def build_layer_mesh(
     obj["hallway_avatar_temp_image_path"] = part.temp_image_path or ""
     obj["hallway_avatar_image_width"] = part.image_size[0]
     obj["hallway_avatar_image_height"] = part.image_size[1]
+    obj["hallway_avatar_canvas_width"] = part.canvas_size[0]
+    obj["hallway_avatar_canvas_height"] = part.canvas_size[1]
+    obj["hallway_avatar_canvas_offset_x"] = part.canvas_offset[0]
+    obj["hallway_avatar_canvas_offset_y"] = part.canvas_offset[1]
     obj["hallway_avatar_semantic_label"] = part.semantic_label
     obj["hallway_avatar_side_guess"] = part.side_guess
     obj["hallway_avatar_confidence"] = part.confidence

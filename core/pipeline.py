@@ -8,7 +8,7 @@ from .. import properties
 from ..utils import blender as blender_utils
 from ..utils import env
 from ..utils.logging import get_logger
-from . import alpha_mesh_adapter, armature_builder, heuristic_rigger, mtoon_materials, part_classifier, psd_io, qremesh, vrm_integration, weighting
+from . import alpha_mesh_adapter, armature_builder, facial_video_preview, heuristic_rigger, mtoon_materials, part_classifier, psd_io, qremesh, vrm_integration, weighting
 
 logger = get_logger("pipeline")
 ADDON_ID = env.addon_package_id(__package__)
@@ -182,6 +182,10 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
 
     mtoon_count = mtoon_materials.configure_avatar_mtoon_materials(parts)
     logger.info("Configured MToon material settings on %s imported layer materials", mtoon_count)
+    if state.auto_setup_facial_video:
+        face_video_obj = facial_video_preview.setup_from_state(context, parts=parts, raise_on_missing=False)
+        if face_video_obj is not None:
+            logger.info("Configured facial video preview on %s", face_video_obj.name)
 
     state.source_psd_path = filepath
     properties.set_layer_items(scene, parts)

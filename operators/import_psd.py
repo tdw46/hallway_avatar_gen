@@ -8,7 +8,7 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 
 from .. import properties
-from ..core import alpha_mesh_adapter, mtoon_materials, part_classifier, pipeline, psd_io, qremesh, weighting
+from ..core import alpha_mesh_adapter, facial_video_preview, mtoon_materials, part_classifier, pipeline, psd_io, qremesh, weighting
 from ..utils import blender as blender_utils
 from ..utils.logging import get_logger
 
@@ -99,7 +99,11 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
         self._armature_name = ""
 
         context.window_manager.progress_begin(0, 100)
-        context.scene.hallway_avatar_state.last_report = "Starting PSD avatar import..."
+        state = context.scene.hallway_avatar_state
+        state.import_progress_visible = True
+        state.import_progress = 0.0
+        state.import_progress_text = "Starting PSD avatar import..."
+        state.last_report = state.import_progress_text
         self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
@@ -110,12 +114,23 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             self._timer = None
         context.window_manager.progress_end()
         if cancelled:
+            context.scene.hallway_avatar_state.import_progress_visible = False
+            context.scene.hallway_avatar_state.import_progress_text = "PSD avatar import cancelled"
             context.scene.hallway_avatar_state.last_report = "PSD avatar import cancelled"
+        else:
+            context.scene.hallway_avatar_state.import_progress_visible = False
+            context.scene.hallway_avatar_state.import_progress = 0.0
+            context.scene.hallway_avatar_state.import_progress_text = ""
         self._tag_viewports(context)
 
     def _progress(self, context: bpy.types.Context, value: int, report: str) -> None:
-        context.window_manager.progress_update(max(0, min(100, value)))
-        context.scene.hallway_avatar_state.last_report = report
+        clamped_value = max(0, min(100, value))
+        context.window_manager.progress_update(clamped_value)
+        state = context.scene.hallway_avatar_state
+        state.import_progress_visible = True
+        state.import_progress = clamped_value / 100.0
+        state.import_progress_text = report
+        state.last_report = report
         self._tag_viewports(context)
 
     @staticmethod
@@ -257,6 +272,10 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
                 self._import_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
             state.last_report = self._import_report
             logger.info("Configured MToon material settings on %s imported layer materials", mtoon_count)
+            if state.auto_setup_facial_video:
+                face_video_obj = facial_video_preview.setup_from_state(context, parts=parts, raise_on_missing=False)
+                if face_video_obj is not None:
+                    logger.info("Configured facial video preview on %s", face_video_obj.name)
             if state.auto_rig_on_import and self._imported_objects:
                 self._stage = "rig"
                 self._progress(context, 82, "MToon setup complete; building rig")

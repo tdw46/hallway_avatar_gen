@@ -199,6 +199,41 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
         description="Build and bind the generated armature automatically after PSD import and optional remesh",
         default=True,
     )
+    auto_setup_facial_video: BoolProperty(
+        name="Facial Video Preview",
+        description="After import, duplicate the Face layer UVs with the supplied transform txt and replace its material with a movie-backed background material",
+        default=False,
+    )
+    facial_video_transform_path: StringProperty(
+        name="Facial UV Transform",
+        description="Text file containing [blender_uv_inverse_transform] and [full_frame_pixel_transform] sections",
+    )
+    facial_video_path: StringProperty(
+        name="Facial Video",
+        description="Movie file to use as the Face layer background material texture",
+    )
+    facial_video_frame_duration: IntProperty(
+        name="Video Frames",
+        description="Number of frames Blender should play from the movie texture",
+        min=1,
+        default=1000,
+    )
+    facial_video_start_frame: IntProperty(
+        name="Start Frame",
+        description="Timeline frame where the movie texture starts playing",
+        min=0,
+        default=0,
+    )
+    facial_video_frame_offset: IntProperty(
+        name="Frame Offset",
+        description="Offset into the movie texture playback",
+        default=0,
+    )
+    facial_video_auto_refresh: BoolProperty(
+        name="Auto Refresh Video",
+        description="Update the movie texture when the timeline frame changes",
+        default=True,
+    )
     min_visible_pixels: IntProperty(name="Minimum Visible Pixels", min=0, default=8)
     alpha_noise_floor: IntProperty(name="Alpha Noise Floor", description="Treat layers below this maximum alpha value as transparent noise", min=0, max=255, default=64)
     visible_alpha_threshold: IntProperty(name="Visible Alpha Threshold", description="Base alpha cutoff for deciding which pixels count as visible", min=0, max=255, default=32)
@@ -212,6 +247,9 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     remeshed_count: IntProperty(name="Remeshed Count")
     skipped_count: IntProperty(name="Skipped Count")
     classified_count: IntProperty(name="Classified Count")
+    import_progress_visible: BoolProperty(name="Show Import Progress", default=False)
+    import_progress: FloatProperty(name="Import Progress", min=0.0, max=1.0, default=0.0, subtype="FACTOR")
+    import_progress_text: StringProperty(name="Import Progress Text")
     active_layer_index: IntProperty(name="Active Layer Index")
     last_report: StringProperty(name="Last Report")
     layer_items: CollectionProperty(type=HALLWAYAVATAR_PG_layer_item)

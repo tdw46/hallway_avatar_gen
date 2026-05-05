@@ -57,6 +57,26 @@ def _draw_group_title(layout: bpy.types.UILayout, text: str, *, icon: str = "BLA
     row.label(text=text, icon=icon)
 
 
+def _draw_path_picker(layout: bpy.types.UILayout, data, prop_name: str, operator_id: str, *, icon: str = "FILE_FOLDER") -> None:
+    row = layout.row(align=True)
+    row.prop(data, prop_name)
+    row.operator(operator_id, text="", icon=icon)
+
+
+def _draw_import_progress(layout: bpy.types.UILayout, state) -> None:
+    if not state.import_progress_visible and not state.import_progress_text:
+        return
+    progress = max(0.0, min(1.0, float(state.import_progress)))
+    text = state.import_progress_text or state.last_report or "Import progress"
+    if hasattr(layout, "progress"):
+        layout.progress(factor=progress, type="BAR", text=text)
+    else:
+        layout.label(text=text, icon="TIME")
+        row = layout.row()
+        row.enabled = False
+        row.prop(state, "import_progress", text=f"{int(progress * 100)}%", slider=True)
+
+
 def _draw_import_settings(layout: bpy.types.UILayout, state) -> None:
     state_path = "scene.hallway_avatar_state"
     import_top = layout.row(align=True)
@@ -75,6 +95,14 @@ def _draw_import_settings(layout: bpy.types.UILayout, state) -> None:
     _draw_group_title(layout, "Output Behavior", icon="OUTLINER_COLLECTION")
     _draw_toggle_prop(layout, state, state_path, "replace_existing")
     _draw_toggle_prop(layout, state, state_path, "auto_bind_on_build")
+    layout.separator()
+    _draw_group_title(layout, "Facial Video Preview", icon="FILE_MOVIE")
+    _draw_path_picker(layout, state, "facial_video_transform_path", "hallway_avatar.select_facial_video_transform")
+    _draw_path_picker(layout, state, "facial_video_path", "hallway_avatar.select_facial_video_file", icon="FILE_MOVIE")
+    layout.prop(state, "facial_video_frame_duration")
+    layout.prop(state, "facial_video_start_frame")
+    layout.prop(state, "facial_video_frame_offset")
+    _draw_toggle_prop(layout, state, state_path, "facial_video_auto_refresh")
     layout.separator()
 
     alpha_header, alpha_panel = layout.panel_prop(state, "show_advanced_alpha_settings")
@@ -166,6 +194,13 @@ class HALLWAYAVATAR_PT_main(Panel):
             _draw_toggle_prop(source_panel, remesh, "scene.hallway_avatar_state.qremesh_settings", "auto_on_import")
             _draw_toggle_prop(source_panel, state, state_path, "import_facial_features")
             _draw_toggle_prop(source_panel, state, state_path, "auto_rig_on_import")
+            _draw_toggle_prop(source_panel, state, state_path, "auto_setup_facial_video")
+            if state.auto_setup_facial_video:
+                _draw_path_picker(source_panel, state, "facial_video_transform_path", "hallway_avatar.select_facial_video_transform")
+                _draw_path_picker(source_panel, state, "facial_video_path", "hallway_avatar.select_facial_video_file", icon="FILE_MOVIE")
+            if state.import_progress_visible or state.import_progress_text:
+                source_panel.separator()
+                _draw_import_progress(source_panel, state)
             if state.last_report:
                 source_panel.separator()
                 source_panel.label(text=state.last_report, icon="INFO")
@@ -245,6 +280,11 @@ class HALLWAYAVATAR_PT_main(Panel):
                 "active_layer_index",
                 rows=8,
             )
+
+        layout.separator()
+        facial_video_button = layout.row()
+        facial_video_button.scale_y = 1.4
+        facial_video_button.operator("hallway_avatar.setup_facial_video", icon="FILE_MOVIE")
 
 
 class HALLWAYAVATAR_PT_import_popover(Panel):
