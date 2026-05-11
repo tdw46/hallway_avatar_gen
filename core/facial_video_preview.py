@@ -21,6 +21,7 @@ BACKGROUND_MATERIAL_NAME = "HAVATAR_MAT_face_background_video"
 
 @dataclass(frozen=True)
 class BlenderUvInverseTransform:
+    convention: str = "blender_bottom_left_uv"
     u_scale: float = 1.0
     u_offset: float = 0.0
     v_scale: float = 1.0
@@ -96,6 +97,7 @@ def parse_transform_text(text: str) -> FacialVideoTransform:
 
     return FacialVideoTransform(
         uv_inverse=BlenderUvInverseTransform(
+            convention=uv_values.get("convention", "blender_bottom_left_uv").strip() or "blender_bottom_left_uv",
             u_scale=_float_value(uv_values, "u_scale", 1.0),
             u_offset=_float_value(uv_values, "u_offset", 0.0),
             v_scale=_float_value(uv_values, "v_scale", 1.0),
@@ -150,7 +152,7 @@ def find_face_object(context: bpy.types.Context, parts: list[LayerPart] | None =
     return None
 
 
-def _face_plane_base_uvs(obj: bpy.types.Object) -> list[Vector]:
+def _face_plane_base_uvs(obj: bpy.types.Object, convention: str = "blender_bottom_left_uv") -> list[Vector]:
     world_positions = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices]
     if not world_positions:
         return []
@@ -166,6 +168,17 @@ def _face_plane_base_uvs(obj: bpy.types.Object) -> list[Vector]:
     if canvas_w > 0.0 and canvas_h > 0.0:
         world_scale = 2.0 / max(1.0, canvas_w, canvas_h)
         ground_offset_z = float(obj.get("hallway_avatar_ground_offset_z", 0.0) or 0.0)
+        if convention == "blender_bottom_left_square_canvas_uv":
+            canvas_square = max(canvas_w, canvas_h, 1.0)
+            pad_x = (canvas_square - canvas_w) * 0.5
+            pad_y = (canvas_square - canvas_h) * 0.5
+            return [
+                Vector((
+                    (co.x / world_scale + canvas_w * 0.5 + pad_x) / canvas_square,
+                    ((co.z - ground_offset_z) / world_scale + canvas_h * 0.5 + pad_y) / canvas_square,
+                ))
+                for co in world_positions
+            ]
         return [
             Vector((
                 (co.x / world_scale + canvas_w * 0.5) / canvas_w,
@@ -193,7 +206,7 @@ def duplicate_transformed_face_uv(obj: bpy.types.Object, transform: FacialVideoT
     else:
         target_uv = existing
 
-    base_uv_by_vertex = _face_plane_base_uvs(obj)
+    base_uv_by_vertex = _face_plane_base_uvs(obj, transform.uv_inverse.convention)
     if not base_uv_by_vertex:
         raise RuntimeError(f"{obj.name} has no vertices for facial video UV generation")
     for polygon in mesh.polygons:
@@ -211,6 +224,7 @@ def duplicate_transformed_face_uv(obj: bpy.types.Object, transform: FacialVideoT
             break
     obj["hallway_avatar_facial_video_uv_layer"] = target_uv.name
     obj["hallway_avatar_facial_video_uv_basis"] = "world_xz_bounds"
+    obj["hallway_avatar_facial_video_uv_convention"] = transform.uv_inverse.convention
     obj["hallway_avatar_facial_video_uv_transform_direction"] = "target_uv_to_video_uv"
     obj["hallway_avatar_facial_video_u_scale"] = transform.uv_inverse.u_scale
     obj["hallway_avatar_facial_video_u_offset"] = transform.uv_inverse.u_offset
