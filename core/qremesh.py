@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import re
 import stat
@@ -137,14 +138,42 @@ def engine_executable() -> Path:
 
 def _engine_support_paths() -> tuple[Path, ...]:
     folder = engine_folder()
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         return (
             folder / "qmeshlib.dylib",
             folder / "libfbxsdk.dylib",
             folder / "ChSolver.dylib",
             folder / "resources",
         )
+    if system == "Windows":
+        return (
+            folder / "qmeshlib.dll",
+            folder / "libfbxsdk.dll",
+            folder / "ChSolver.dll",
+            folder / "resources",
+        )
+    if system == "Linux":
+        return (
+            folder / "libqmeshlib.so",
+            folder / "libfbxsdk.so",
+            folder / "libChSolver.so",
+            folder / "resources",
+        )
     return (folder / "resources",)
+
+
+def _runtime_environment(runtime: _RuntimePaths) -> dict[str, str]:
+    env = dict(os.environ)
+    runtime_dir = str(runtime.engine_folder)
+    system = platform.system()
+    if system == "Linux":
+        current = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = runtime_dir if not current else f"{runtime_dir}:{current}"
+    elif system == "Windows":
+        current = env.get("PATH")
+        env["PATH"] = runtime_dir if not current else f"{runtime_dir};{current}"
+    return env
 
 
 def _clear_quarantine(path: Path) -> None:
@@ -464,6 +493,7 @@ def _run_runtime_engine(
     process = subprocess.Popen(
         [str(runtime.engine_path), "-s", str(settings_path)],
         cwd=str(runtime.engine_folder),
+        env=_runtime_environment(runtime),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

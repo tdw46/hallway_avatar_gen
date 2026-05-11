@@ -17,8 +17,8 @@ platform plus its companion runtime files and `resources/` directory.
 Examples:
 
 - macOS: `qmesh`, `qmeshlib.dylib`, `libfbxsdk.dylib`, `ChSolver.dylib`, `resources/`
-- Windows: `qmesh.exe`, required `.dll` files, `resources/`
-- Linux: `qmesh`, required `.so` files, `resources/`
+- Windows: `qmesh.exe`, `qmeshlib.dll`, required `.dll` files, `resources/`
+- Linux: `qmesh`, `libqmeshlib.so`, required `.so` files, `resources/`
 
 The legacy macOS layout directly in `resources/quad_remesher_engine/` is still
 accepted for backward compatibility, but cross-platform builds should use the
