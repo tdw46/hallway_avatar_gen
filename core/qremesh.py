@@ -96,8 +96,39 @@ class _RuntimePaths:
     engine_path: Path
     engine_support_paths: tuple[Path, ...]
 
+
+def _machine_key() -> str:
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x86_64"}:
+        return "x64"
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    return machine or "unknown"
+
+
+def runtime_platform_key() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return f"Darwin-{_machine_key()}"
+    if system == "Windows":
+        return f"Windows-{_machine_key()}"
+    if system == "Linux":
+        return f"Linux-{_machine_key()}"
+    return f"{system or 'Unknown'}-{_machine_key()}"
+
+
+def _platform_engine_folder() -> Path:
+    return paths.quad_remesher_runtime_dir() / runtime_platform_key()
+
+
 def engine_folder() -> Path:
-    return paths.quad_remesher_runtime_dir()
+    platform_folder = _platform_engine_folder()
+    if platform_folder.exists():
+        return platform_folder
+    legacy_folder = paths.quad_remesher_runtime_dir()
+    if platform.system() == "Darwin" and (legacy_folder / "qmesh").exists():
+        return legacy_folder
+    return platform_folder
 
 
 def engine_executable() -> Path:
@@ -137,11 +168,12 @@ def _fix_executable_mode(path: Path) -> None:
 
 
 def runtime_status() -> str:
+    platform_key = runtime_platform_key()
     if engine_executable().exists() and all(support_path.exists() for support_path in _engine_support_paths()):
-        return "vendored runtime ready"
+        return f"vendored runtime ready ({platform_key})"
     if not engine_executable().exists():
-        return "vendored engine missing"
-    return "vendored engine support files missing"
+        return f"vendored engine missing ({platform_key})"
+    return f"vendored engine support files missing ({platform_key})"
 
 
 def ensure_runtime() -> _RuntimePaths:
@@ -149,7 +181,11 @@ def ensure_runtime() -> _RuntimePaths:
     support_paths = _engine_support_paths()
 
     if not engine_path.exists():
-        raise QRemeshError(f"Vendored Quad Remesher engine not found at {engine_path}")
+        raise QRemeshError(
+            "Vendored Quad Remesher engine not found for "
+            f"{runtime_platform_key()} at {engine_path}. Add the platform runtime under "
+            f"{_platform_engine_folder()}."
+        )
     missing_support = [path for path in support_paths if not path.exists()]
     if missing_support:
         missing_text = ", ".join(str(path) for path in missing_support)
