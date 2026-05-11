@@ -245,6 +245,7 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     auto_bind_on_build: BoolProperty(name="Auto Bind On Build", description="Bind imported meshes automatically when a rig is built", default=True)
     imported_count: IntProperty(name="Imported Count")
     remeshed_count: IntProperty(name="Remeshed Count")
+    remesh_performed: BoolProperty(name="Remesh Performed", default=False)
     skipped_count: IntProperty(name="Skipped Count")
     classified_count: IntProperty(name="Classified Count")
     import_progress_visible: BoolProperty(name="Show Import Progress", default=False)

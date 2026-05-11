@@ -554,18 +554,24 @@ def _detect_split_front_hair_strands(
             head_mid_world_z,
         )
         return None
-    if left_center_world_z >= head_mid_world_z or right_center_world_z >= head_mid_world_z:
+    lower_head_z = min(head_mid_world_z, head_tail_world_z)
+    upper_head_z = max(head_mid_world_z, head_tail_world_z)
+    side_center_limit_z = lower_head_z + ((upper_head_z - lower_head_z) * 0.45)
+    side_center_limit_z = max(side_center_limit_z, lower_head_z + (8.0 * world_scale))
+    if left_center_world_z >= side_center_limit_z or right_center_world_z >= side_center_limit_z:
+        left_low_world_z = min(point[1] for point in left_points)
+        right_low_world_z = min(point[1] for point in right_points)
         logger.info(
-            "Front hair split reject %s -> side COM not below head midpoint left_center_world_z=%.6f right_center_world_z=%.6f head_mid_world_z=%.6f head_tail_world_z=%.6f left_strand_count=%s right_strand_count=%s",
+            "Front hair split side COM high; continuing with bbox-guided split %s -> left_center_world_z=%.6f right_center_world_z=%.6f left_low_world_z=%.6f right_low_world_z=%.6f side_center_limit_z=%.6f head_mid_world_z=%.6f head_tail_world_z=%.6f",
             part.layer_name or part.layer_path,
             left_center_world_z,
             right_center_world_z,
+            left_low_world_z,
+            right_low_world_z,
+            side_center_limit_z,
             head_mid_world_z,
             head_tail_world_z,
-            len(left_strand_points),
-            len(right_strand_points),
         )
-        return None
 
     left_x_values = [point[0] for point in left_points]
     right_x_values = [point[0] for point in right_points]
@@ -947,10 +953,13 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
     }
     layer_auto_weight_bones: dict[str, tuple[str, ...]] = {}
     body_chain = tuple(name for name in ("root", "hips", "torso", "spine", "neck", "head") if name in bones)
+    neck_chain = tuple(name for name in ("spine", "neck", "head") if name in bones)
     for part in visible:
         token = _canonical_token(part)
         if token == "topwear" and body_chain:
             layer_auto_weight_bones[part.layer_path] = body_chain
+        elif token in NECK_TOKENS and neck_chain:
+            layer_auto_weight_bones[part.layer_path] = neck_chain
         elif token == "front hair" and "front_hair" in hair_chain_map:
             layer_auto_weight_bones[part.layer_path] = hair_chain_map["front_hair"]
             layer_bone_map[part.layer_path] = hair_chain_map["front_hair"][0]

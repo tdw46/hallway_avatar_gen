@@ -128,6 +128,7 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
     scene = context.scene
     state = scene.hallway_avatar_state
     cache_dir = _cache_dir_from_context(context)
+    state.remesh_performed = False
 
     parts = psd_io.load_psd_layer_parts(
         filepath,
@@ -178,6 +179,7 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
     remeshed_count = 0
     if state.qremesh_settings.auto_on_import and imported_objects:
         remeshed_count = qremesh.remesh_parts(context, parts, qremesh.QRemeshSettings.from_scene_state(state))
+        state.remesh_performed = remeshed_count > 0
         logger.info("Auto-remeshed %s imported layer objects", remeshed_count)
 
     mtoon_count = mtoon_materials.configure_avatar_mtoon_materials(parts)
@@ -195,6 +197,7 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
         import_report = f"Imported {state.imported_count} layers, remeshed {state.remeshed_count}, skipped {state.skipped_count}"
     else:
         state.remeshed_count = 0
+        state.remesh_performed = False
         import_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
     state.last_report = import_report
 
@@ -292,6 +295,7 @@ def remesh_imported_scene(context: bpy.types.Context, *, only_selected: bool = F
     logger.info("Configured MToon material settings on %s remeshed layer materials", mtoon_count)
     properties.set_layer_items(scene, parts)
     state.remeshed_count = count
+    state.remesh_performed = count > 0
     state.last_report = f"Remeshed {count} imported layer objects"
     logger.info(state.last_report)
     return count

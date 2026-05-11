@@ -104,6 +104,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
         state.import_progress = 0.0
         state.import_progress_text = "Starting PSD avatar import..."
         state.last_report = state.import_progress_text
+        state.remesh_performed = False
         self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
@@ -265,10 +266,12 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             state.source_psd_path = self.filepath
             properties.set_layer_items(context.scene, parts)
             state.remeshed_count = self._remeshed_count
+            state.remesh_performed = self._remeshed_count > 0
             if state.qremesh_settings.auto_on_import and self._imported_objects:
                 self._import_report = f"Imported {state.imported_count} layers, remeshed {state.remeshed_count}, skipped {state.skipped_count}"
             else:
                 state.remeshed_count = 0
+                state.remesh_performed = False
                 self._import_report = f"Imported {state.imported_count} layers, skipped {state.skipped_count}"
             state.last_report = self._import_report
             logger.info("Configured MToon material settings on %s imported layer materials", mtoon_count)

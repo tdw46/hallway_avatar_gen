@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "hallway_avatar_gen"
 version = "0.1.0"
 name = "Hallway Avatar Gen"
-tagline = "Import See-through PSD layers now; 2.5-D avatar generation is coming later"
+tagline = "Import See-through PSD layers for avatar rigging"
 maintainer = "Tyler Walker"
 type = "add-on"
 

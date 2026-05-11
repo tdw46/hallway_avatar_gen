@@ -14,6 +14,7 @@ logger = get_logger("weighting")
 HAIR_SMOOTH_REPEAT = 80
 SPLIT_FRONT_HAIR_PRE_BRIDGE_SMOOTH_REPEAT = 60
 SPLIT_FRONT_HAIR_POST_BRIDGE_SMOOTH_REPEAT = 20
+NECK_BLEND_SMOOTH_REPEAT = 40
 OTHER_SMOOTH_REPEAT = 100
 HAIR_BONE_PREFIXES = ("front_hair_", "back_hair_")
 HEAD_PRIORITY_TOKENS = {
@@ -279,6 +280,63 @@ def _override_head_weights(
             group.add([vertex.index], 0.0, "REPLACE")
 
 
+def _smoothstep(value: float) -> float:
+    value = min(max(value, 0.0), 1.0)
+    return value * value * (3.0 - (2.0 * value))
+
+
+def _blend_neck_head_weights(
+    obj: bpy.types.Object,
+    armature_obj: bpy.types.Object,
+    bone_names: tuple[str, ...],
+) -> bool:
+    if "neck" not in bone_names or "head" not in bone_names:
+        return False
+    if armature_obj.data.bones.get("neck") is None or armature_obj.data.bones.get("head") is None:
+        return False
+    if obj.type != "MESH" or obj.data is None or not obj.data.vertices:
+        return False
+
+    neck_group = _ensure_group(obj, "neck")
+    head_group = _ensure_group(obj, "head")
+    blend_groups = [neck_group, head_group]
+    spine_group = obj.vertex_groups.get("spine") if "spine" in bone_names else None
+    if spine_group is not None:
+        blend_groups.append(spine_group)
+
+    world_positions = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices]
+    min_z = min(co.z for co in world_positions)
+    max_z = max(co.z for co in world_positions)
+    height = max(max_z - min_z, 1.0e-6)
+    affected = 0
+
+    for vertex, world_co in zip(obj.data.vertices, world_positions, strict=False):
+        z_ratio = (world_co.z - min_z) / height
+        head_weight = _smoothstep((z_ratio - 0.30) / 0.65)
+        spine_weight = max(0.0, 1.0 - (z_ratio / 0.30)) * 0.20 if spine_group is not None else 0.0
+        neck_weight = max(0.0, 1.0 - head_weight - spine_weight)
+        weights: dict[bpy.types.VertexGroup, float] = {
+            neck_group: neck_weight,
+            head_group: head_weight,
+        }
+        if spine_group is not None and spine_weight > 0.0:
+            weights[spine_group] = spine_weight
+        for group in blend_groups:
+            if group not in weights:
+                weights[group] = 0.0
+        _set_normalized_weights(vertex.index, weights)
+        affected += 1
+
+    logger.info(
+        "Blended neck/head weights on %s -> affected=%s min_z=%.6f max_z=%.6f",
+        obj.name,
+        affected,
+        min_z,
+        max_z,
+    )
+    return affected > 0
+
+
 def _apply_split_front_hair_head_bridge(
     obj: bpy.types.Object,
     armature_obj: bpy.types.Object,
@@ -384,6 +442,8 @@ def bind_parts(
                     _smooth_weights(context, obj, SPLIT_FRONT_HAIR_PRE_BRIDGE_SMOOTH_REPEAT)
                     _apply_split_front_hair_head_bridge(obj, armature_obj, filtered_auto_bones)
                     _smooth_weights(context, obj, SPLIT_FRONT_HAIR_POST_BRIDGE_SMOOTH_REPEAT)
+                elif token in heuristic_rigger.NECK_TOKENS and _blend_neck_head_weights(obj, armature_obj, filtered_auto_bones):
+                    _smooth_weights(context, obj, NECK_BLEND_SMOOTH_REPEAT)
                 else:
                     _smooth_weights(
                         context,
@@ -402,6 +462,12 @@ def bind_parts(
         if armature_obj.data.bones.get(bone_name) is None:
             bone_name = "root" if armature_obj.data.bones.get("root") else next(iter(armature_obj.data.bones)).name
         _assign_rigid(obj, bone_name)
+        if token in heuristic_rigger.NECK_TOKENS:
+            _blend_neck_head_weights(
+                obj,
+                armature_obj,
+                tuple(name for name in ("spine", "neck", "head") if armature_obj.data.bones.get(name)),
+            )
         _smooth_weights(context, obj, OTHER_SMOOTH_REPEAT)
         _set_armature_parent_keep_transform(obj, armature_obj)
 
