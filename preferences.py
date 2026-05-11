@@ -56,12 +56,14 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
         status_box.label(text=f"Quad Remesher Backend: {qremesh.runtime_status()}")
         status_box.label(text=f"Vendored Engine: {qremesh.engine_executable()}")
 
-        install_box = layout.box()
-        install_box.label(text="PSD Backend")
-        install_box.label(text="Installs PSD parsing plus silhouette tracing dependencies.")
-        install_box.label(text="See-through generation dependencies are not required yet.")
-        install_box.label(text="Use bundled wheels or vendored packages inside this extension folder.")
-        install_box.operator("hallway_avatar.install_psd_backend", icon="IMPORT")
+        psd_backend_status = env.psd_backend_status(self.cache_dir)
+        if psd_backend_status != "ready":
+            install_box = layout.box()
+            install_box.label(text="PSD Backend")
+            install_box.label(text="Installs PSD parsing plus silhouette tracing dependencies.")
+            install_box.label(text="See-through generation dependencies are not required yet.")
+            install_box.label(text="Use bundled wheels or vendored packages inside this extension folder.")
+            install_box.operator("hallway_avatar.install_psd_backend", icon="IMPORT")
 
         remesh_box = layout.box()
         remesh_box.label(text="Quad Remesh")

@@ -51,13 +51,44 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
         return {"RUNNING_MODAL"}
 
     def execute(self, context: bpy.types.Context):
-        filepath = (self.filepath or context.scene.hallway_avatar_state.source_psd_path or "").strip()
+        state = context.scene.hallway_avatar_state
+        filepath = (self.filepath or state.source_psd_path or "").strip()
         if not filepath:
             self.report({"ERROR"}, "Choose a PSD first.")
+            return {"CANCELLED"}
+        state.source_psd_path = filepath
+        if self._facial_video_inputs_required(state):
+            state.last_report = "Select Facial config txt and Facial Video FIRST before importing the PSD Avatar."
+            self._show_facial_video_inputs_popup(context)
             return {"CANCELLED"}
         if context.window is None:
             return self._execute_blocking(context, filepath)
         return self._start_modal(context, filepath)
+
+    @staticmethod
+    def _facial_video_inputs_required(state) -> bool:
+        if not state.auto_setup_facial_video:
+            return False
+        return not (state.facial_video_transform_path or "").strip() or not (state.facial_video_path or "").strip()
+
+    @staticmethod
+    def _show_facial_video_inputs_popup(context: bpy.types.Context) -> None:
+        if bpy.app.background:
+            return
+        window_manager = getattr(context, "window_manager", None)
+        if window_manager is None:
+            return
+
+        def draw(self, _context):
+            layout = self.layout
+            layout.label(text="Facial Video Preview is ON.")
+            layout.label(text="Select Facial config txt and Facial Video FIRST.")
+            layout.label(text="The PSD path was saved; import after both are set.")
+
+        try:
+            window_manager.popup_menu(draw, title="Facial Video Inputs Required", icon="ERROR")
+        except Exception:
+            pass
 
     def modal(self, context: bpy.types.Context, event):
         if event.type != "TIMER":

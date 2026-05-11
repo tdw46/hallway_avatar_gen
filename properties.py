@@ -202,7 +202,7 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     auto_setup_facial_video: BoolProperty(
         name="Facial Video Preview",
         description="After import, duplicate the Face layer UVs with the supplied transform txt and replace its material with a movie-backed background material",
-        default=False,
+        default=True,
     )
     facial_video_transform_path: StringProperty(
         name="Facial UV Transform",
