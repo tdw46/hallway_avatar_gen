@@ -8,7 +8,7 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 
 from .. import properties
-from ..core import alpha_mesh_adapter, facial_video_preview, mtoon_materials, part_classifier, pipeline, psd_io, qremesh, weighting
+from ..core import alpha_mesh_adapter, facial_video_preview, mtoon_materials, part_classifier, pipeline, psd_io, qremeshify, weighting
 from ..utils import blender as blender_utils
 from ..utils.logging import get_logger
 
@@ -96,6 +96,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
         try:
             done = self._step(context)
         except Exception as exc:
+            logger.exception("PSD import modal failed during stage %s", self._stage)
             self._finish_modal(context, cancelled=True)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -111,6 +112,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             self.report({"INFO"}, context.scene.hallway_avatar_state.last_report)
             return {"FINISHED"}
         except Exception as exc:
+            logger.exception("PSD import failed in blocking mode")
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
@@ -249,14 +251,14 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
 
         if self._stage == "remesh_setup":
             parts = self._parts or []
-            if state.qremesh_settings.auto_on_import and self._imported_objects:
-                settings = qremesh.QRemeshSettings.from_scene_state(state)
+            if state.qremeshify_settings.auto_on_import and self._imported_objects:
+                settings = qremeshify.QRemeshifySettings.from_scene_state(state)
                 self._remesh_candidates = [
                     part
                     for part in parts
                     if not part.skipped
                     and part.imported_object_name
-                    and qremesh._should_remesh_part(part, settings)
+                    and qremeshify._should_remesh_part(part, settings)
                 ]
                 self._remesh_settings = settings
                 self._remesh_index = 0
@@ -279,10 +281,13 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             obj = bpy.data.objects.get(part.imported_object_name)
             if obj is not None:
                 try:
-                    remeshed_obj = qremesh.remesh_object(context, obj, self._remesh_settings)
-                except qremesh.QRemeshError as exc:
-                    obj["hallway_avatar_qremesh_error"] = str(exc)
-                    logger.error("Quad Remesher failed for %s: %s", obj.name, exc)
+                    remeshed_obj = qremeshify.remesh_object(context, obj, self._remesh_settings)
+                except qremeshify.QRemeshifyUnsupportedInput as exc:
+                    obj["hallway_avatar_qremeshify_skipped"] = str(exc)
+                    logger.warning("QRemeshify skipped %s: %s", obj.name, exc)
+                except qremeshify.QRemeshifyError as exc:
+                    obj["hallway_avatar_qremeshify_error"] = str(exc)
+                    logger.error("QRemeshify failed for %s: %s", obj.name, exc)
                 else:
                     part.imported_object_name = remeshed_obj.name
                     self._remeshed_count += 1
@@ -298,7 +303,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             properties.set_layer_items(context.scene, parts)
             state.remeshed_count = self._remeshed_count
             state.remesh_performed = self._remeshed_count > 0
-            if state.qremesh_settings.auto_on_import and self._imported_objects:
+            if state.qremeshify_settings.auto_on_import and self._imported_objects:
                 self._import_report = f"Imported {state.imported_count} layers, remeshed {state.remeshed_count}, skipped {state.skipped_count}"
             else:
                 state.remeshed_count = 0

@@ -8,5 +8,5 @@
 - Implemented recursive PSD traversal with empty-layer filtering and cached layer export
 - Added traced alpha-mesh import, layer grounding, and draw-order-preserving layer stacking
 - Added first-pass Stretchy-style autorigging, weighting, and voxel-binding integration
-- Replaced the bundled open remesh runtime with a vendored Quad Remesher `qmesh` runtime and vendored voxel-binding binaries
+- Replaced the remesh runtime with a vendored QRemeshify runtime and vendored voxel-binding binaries
 - Repositioned the extension publicly as `Hallway Avatar Gen`, with See-through-based 2.5-D generation marked as upcoming work

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import PropertyGroup
 
 from .core.models import LayerPart
+from .core.qremeshify_runtime.props import QRPropertyGroup, QWPropertyGroup
 
 
 class HALLWAYAVATAR_PG_layer_item(PropertyGroup):
@@ -43,7 +44,7 @@ class HALLWAYAVATAR_PG_layer_item(PropertyGroup):
     draw_index: IntProperty(name="Draw Index")
 
 
-class HALLWAYAVATAR_PG_qremesh_settings(PropertyGroup):
+class HALLWAYAVATAR_PG_qremeshify_settings(PropertyGroup):
     show_section: BoolProperty(
         name="Show Remesh Section",
         description="Expand or collapse the quad remesh settings section",
@@ -51,27 +52,20 @@ class HALLWAYAVATAR_PG_qremesh_settings(PropertyGroup):
     )
     show_main_settings_section: BoolProperty(
         name="Show Main Remesh Settings",
-        description="Expand or collapse the main qmesh settings section",
+        description="Expand or collapse the main QRemeshify settings section",
         default=True,
     )
-    show_edge_loops_section: BoolProperty(
-        name="Show Edge Loops Section",
-        description="Expand or collapse the edge-loop guidance settings section",
+    show_advanced_qremeshify: BoolProperty(
+        name="Show Advanced QRemeshify Settings",
+        description="Expand or collapse QRemeshify advanced controls",
         default=False,
     )
-    show_misc_section: BoolProperty(
-        name="Show Misc Section",
-        description="Expand or collapse the symmetry and misc qmesh settings section",
-        default=False,
-    )
+    show_callback_limits: BoolProperty(name="Show Callback Limits", description="Expand or collapse QRemeshify callback limit controls", default=False)
     auto_on_import: BoolProperty(
         name="Auto Remesh On Import",
         description="Run quad remesh automatically after PSD layers are imported",
         default=True,
     )
-    target_quad_count: IntProperty(name="Quad Count", default=3000, soft_min=100, soft_max=10000, min=1, step=20)
-    unsubdivide_iterations: IntProperty(name="Un-Subdivide", default=2, min=0, max=8, soft_max=6)
-    unsubdivide_target_count: IntProperty(name="Un-Subdivide Target", default=1400, min=1, soft_min=100, soft_max=10000, step=20)
     show_advanced_filters: BoolProperty(
         name="Show Advanced Remesh Filters",
         description="Expand or collapse the See-through category remesh filter section",
@@ -89,87 +83,6 @@ class HALLWAYAVATAR_PG_qremesh_settings(PropertyGroup):
     remesh_wings: BoolProperty(name="Wings", description="Allow quad remesh on wing layers", default=False)
     remesh_objects: BoolProperty(name="Objects / Accessories", description="Allow quad remesh on prop and accessory layers", default=False)
     remesh_unclassified: BoolProperty(name="Unclassified", description="Allow quad remesh on layers that did not match a See-through category", default=False)
-    target_count_as_input_percentage: BoolProperty(
-        name="Target Count Is Input %",
-        description="Interpret Quad Count as a percentage of the input face count instead of a fixed target",
-        default=True,
-    )
-    target_edge_length: FloatProperty(name="Target Edge Length", default=0.02, min=0.0, precision=4, unit="LENGTH")
-    adaptive_size: FloatProperty(name="Adaptive Size", default=100.0, min=0.0, max=100.0, precision=0, subtype="PERCENTAGE")
-    adapt_quad_count: BoolProperty(
-        name="Adapt Quad Count",
-        description="Let qmesh exceed the target count when it needs extra topology to preserve detail",
-        default=True,
-    )
-    max_quad_ratio: FloatProperty(name="Max Quad Ratio", default=6.0, min=1.0, soft_max=16.0, precision=2)
-    use_vertex_color_map: BoolProperty(name="Use Vertex Color Map", description="Use painted vertex colors to drive local quad density", default=False)
-    use_materials: BoolProperty(name="Use Materials", description="Use material borders as hints when generating quad flow", default=False)
-    use_normals_splitting: BoolProperty(name="Use Normals Splitting", description="Use split normals as hard-edge guidance for quad flow", default=False)
-    autodetect_hard_edges: BoolProperty(name="Detect Hard Edges", description="Automatically detect hard edges from geometry angles", default=True)
-    enable_remesh: BoolProperty(name="Preprocess", description="Reserved upstream preprocess toggle", default=False)
-    enable_smoothing: BoolProperty(name="Smoothing", description="Reserved upstream smoothing toggle", default=False)
-    enable_sharp: BoolProperty(name="Sharp Detection", description="Reserved upstream sharp-feature toggle", default=True)
-    sharp_angle: FloatProperty(name="Angle Threshold", min=0.0, max=180.0, default=35.0, precision=1, step=10, subtype="UNSIGNED")
-    symmetry_x: BoolProperty(name="X Symmetry", description="Force local X-axis symmetry during quad remesh", default=False)
-    symmetry_y: BoolProperty(name="Y Symmetry", description="Force local Y-axis symmetry during quad remesh", default=False)
-    symmetry_z: BoolProperty(name="Z Symmetry", description="Force local Z-axis symmetry during quad remesh", default=False)
-    scale_factor: FloatProperty(name="Dynamic Quad Size", min=0.01, max=10.0, default=1.0, subtype="FACTOR")
-    fixed_chart_clusters: IntProperty(name="Fixed Chart Clusters", min=0, default=0)
-    alpha: FloatProperty(name="Alpha", default=0.005, min=0.0, max=0.999, precision=3, step=0.5, subtype="FACTOR")
-    ilp_method: EnumProperty(
-        name="ILP Method",
-        items=(
-            ("LEASTSQUARES", "Least Squares", ""),
-            ("ABS", "Absolute", ""),
-        ),
-        default="LEASTSQUARES",
-    )
-    time_limit: IntProperty(name="Time Limit", min=1, default=200)
-    gap_limit: FloatProperty(name="Gap Limit", min=0.0, default=0.0)
-    minimum_gap: FloatProperty(name="Minimum Gap", min=0.0, default=0.4)
-    isometry: BoolProperty(name="Isometry", description="Favor even, isometric quad sizing during remeshing", default=True)
-    regularity_quadrilaterals: BoolProperty(name="Regularity Quads", description="Favor regular quad layouts when solving the remesh", default=True)
-    regularity_non_quadrilaterals: BoolProperty(name="Regularity Non-Quads", description="Favor regular layouts around non-quad patches", default=True)
-    regularity_non_quadrilaterals_weight: FloatProperty(name="Non-Quad Weight", min=0.0, max=1.0, default=0.9)
-    align_singularities: BoolProperty(name="Align Singularities", description="Try to align singularity placement with the solved field", default=True)
-    align_singularities_weight: FloatProperty(name="Singularity Weight", min=0.0, max=1.0, default=0.1)
-    repeat_losing_constraints_iterations: BoolProperty(name="Repeat Constraint Iterations", description="Retry the solver while relaxing losing constraints between passes", default=True)
-    repeat_losing_constraints_quads: BoolProperty(name="Repeat Constraint Quads", description="Preserve quad regularity constraints during repeat passes", default=False)
-    repeat_losing_constraints_non_quads: BoolProperty(name="Repeat Constraint Non-Quads", description="Preserve non-quad regularity constraints during repeat passes", default=False)
-    repeat_losing_constraints_align: BoolProperty(name="Repeat Constraint Align", description="Preserve singularity alignment constraints during repeat passes", default=True)
-    hard_parity_constraint: BoolProperty(name="Hard Parity Constraint", description="Force a stricter parity constraint when solving the quad layout", default=True)
-    flow_config: EnumProperty(
-        name="Flow Config",
-        items=(
-            ("SIMPLE", "Simple", ""),
-            ("HALF", "Half", ""),
-        ),
-        default="SIMPLE",
-    )
-    satsuma_config: EnumProperty(
-        name="Satsuma Config",
-        items=(
-            ("DEFAULT", "Default", ""),
-            ("MST", "Approx-MST", ""),
-            ("ROUND2EVEN", "Approx-Round2Even", ""),
-            ("SYMMDC", "Approx-Symmdc", ""),
-            ("EDGETHRU", "Edgethru", ""),
-            ("LEMON", "Lemon", ""),
-            ("NODETHRU", "Nodethru", ""),
-        ),
-        default="DEFAULT",
-    )
-    callback_time_limit: FloatVectorProperty(
-        name="Callback Time Limit",
-        size=8,
-        default=(3.0, 5.0, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0),
-    )
-    callback_gap_limit: FloatVectorProperty(
-        name="Callback Gap Limit",
-        size=8,
-        precision=3,
-        default=(0.005, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.3),
-    )
 
 
 class HALLWAYAVATAR_PG_state(PropertyGroup):
@@ -254,12 +167,14 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     active_layer_index: IntProperty(name="Active Layer Index")
     last_report: StringProperty(name="Last Report")
     layer_items: CollectionProperty(type=HALLWAYAVATAR_PG_layer_item)
-    qremesh_settings: PointerProperty(type=HALLWAYAVATAR_PG_qremesh_settings)
+    qremeshify_settings: PointerProperty(type=HALLWAYAVATAR_PG_qremeshify_settings)
 
 
 classes = (
+    QWPropertyGroup,
+    QRPropertyGroup,
     HALLWAYAVATAR_PG_layer_item,
-    HALLWAYAVATAR_PG_qremesh_settings,
+    HALLWAYAVATAR_PG_qremeshify_settings,
     HALLWAYAVATAR_PG_state,
 )
 
@@ -276,9 +191,13 @@ def unregister() -> None:
 
 def register_properties() -> None:
     bpy.types.Scene.hallway_avatar_state = bpy.props.PointerProperty(type=HALLWAYAVATAR_PG_state)
+    bpy.types.Scene.quadwild_props = bpy.props.PointerProperty(type=QWPropertyGroup)
+    bpy.types.Scene.quadpatches_props = bpy.props.PointerProperty(type=QRPropertyGroup)
 
 
 def unregister_properties() -> None:
+    del bpy.types.Scene.quadpatches_props
+    del bpy.types.Scene.quadwild_props
     del bpy.types.Scene.hallway_avatar_state
 
 

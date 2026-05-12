@@ -4,7 +4,7 @@ import bpy
 from bpy.types import Panel, UIList
 
 from ..utils import env
-from ..core import qremesh
+from ..core import qremeshify
 
 
 class HALLWAYAVATAR_UL_layers(UIList):
@@ -128,36 +128,67 @@ def _draw_import_settings(layout: bpy.types.UILayout, state) -> None:
             trace_panel.prop(state, "trace_contrast_high")
 
 
-def _draw_remesh_settings(layout: bpy.types.UILayout, remesh) -> None:
-    remesh_path = "scene.hallway_avatar_state.qremesh_settings"
-    _draw_group_title(layout, "Topology Target", icon="MOD_REMESH")
-    layout.prop(remesh, "target_quad_count")
-    layout.prop(remesh, "unsubdivide_iterations", slider=True)
-    layout.prop(remesh, "unsubdivide_target_count")
+def _draw_remesh_settings(layout: bpy.types.UILayout, context: bpy.types.Context, remesh) -> None:
+    remesh_path = "scene.hallway_avatar_state.qremeshify_settings"
+    qw = context.scene.quadwild_props
+    qr = context.scene.quadpatches_props
+
+    _draw_group_title(layout, "QRemeshify", icon="MOD_REMESH")
+    _draw_toggle_prop(layout, remesh, remesh_path, "auto_on_import")
+    layout.prop(qr, "scaleFact", text="Density")
+    layout.prop(qr, "fixedChartClusters")
     layout.separator()
-    _draw_group_title(layout, "Sizing Strategy", icon="DRIVER_DISTANCE")
-    layout.prop(remesh, "target_edge_length")
-    layout.prop(remesh, "adaptive_size")
-    _draw_toggle_prop(layout, remesh, remesh_path, "adapt_quad_count")
-    _draw_toggle_prop(layout, remesh, remesh_path, "target_count_as_input_percentage")
+    _draw_group_title(layout, "Preprocess", icon="MOD_EDGESPLIT")
+    _draw_toggle_prop(layout, qw, "scene.quadwild_props", "enableRemesh")
+    _draw_toggle_prop(layout, qw, "scene.quadwild_props", "enableSmoothing")
+    _draw_toggle_prop(layout, qw, "scene.quadwild_props", "enableSharp")
+    layout.prop(qw, "sharpAngle")
     layout.separator()
-    loops_top = layout.row(align=True)
-    loops_top.label(text="Edge Loops Control", icon="MOD_EDGESPLIT")
-    _draw_reset_button(loops_top, "edge_loops")
+    _draw_group_title(layout, "Symmetry", icon="MOD_MIRROR")
+    symmetry_row = layout.row(align=True)
+    symmetry_row.prop(qw, "symmetryX", expand=True, toggle=1)
+    symmetry_row.prop(qw, "symmetryY", expand=True, toggle=1)
+    symmetry_row.prop(qw, "symmetryZ", expand=True, toggle=1)
     layout.separator()
-    _draw_toggle_prop(layout, remesh, remesh_path, "use_vertex_color_map")
-    _draw_toggle_prop(layout, remesh, remesh_path, "use_materials")
-    layout.separator()
-    _draw_toggle_prop(layout, remesh, remesh_path, "use_normals_splitting")
-    _draw_toggle_prop(layout, remesh, remesh_path, "autodetect_hard_edges")
-    layout.separator()
-    symmetry_top = layout.row(align=True)
-    symmetry_top.label(text="Symmetry", icon="ORIENTATION_GLOBAL")
-    _draw_reset_button(symmetry_top, "remesh_misc")
-    layout.separator()
-    _draw_toggle_prop(layout, remesh, remesh_path, "symmetry_x")
-    _draw_toggle_prop(layout, remesh, remesh_path, "symmetry_y")
-    _draw_toggle_prop(layout, remesh, remesh_path, "symmetry_z")
+
+    advanced_header, advanced_panel = layout.panel_prop(remesh, "show_advanced_qremeshify")
+    _draw_header(advanced_header, "Advanced QRemeshify", icon="PREFERENCES")
+    _draw_reset_button(advanced_header, "remesh_advanced")
+    if advanced_panel:
+        _draw_group_title(advanced_panel, "Debug / Cache", icon="CONSOLE")
+        _draw_toggle_prop(advanced_panel, qw, "scene.quadwild_props", "debug")
+        _draw_toggle_prop(advanced_panel, qw, "scene.quadwild_props", "useCache")
+        advanced_panel.separator()
+        _draw_group_title(advanced_panel, "Solvers", icon="SETTINGS")
+        advanced_panel.prop(qr, "flowConfig")
+        advanced_panel.prop(qr, "satsumaConfig")
+        advanced_panel.prop(qr, "ilpMethod")
+        advanced_panel.prop(qr, "timeLimit")
+        advanced_panel.prop(qr, "gapLimit")
+        advanced_panel.prop(qr, "minimumGap")
+        advanced_panel.separator()
+        _draw_group_title(advanced_panel, "Objective Weights", icon="MOD_VERTEX_WEIGHT")
+        advanced_panel.prop(qr, "alpha")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "isometry")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "regularityQuadrilaterals", label="Regularity Quadrilaterals")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "regularityNonQuadrilaterals", label="Regularity Non Quadrilaterals")
+        advanced_panel.prop(qr, "regularityNonQuadrilateralsWeight")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "alignSingularities")
+        advanced_panel.prop(qr, "alignSingularitiesWeight")
+        advanced_panel.separator()
+        _draw_group_title(advanced_panel, "Constraints", icon="CONSTRAINT")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "repeatLosingConstraintsIterations", label="Repeat Losing Iterations")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "repeatLosingConstraintsQuads", label="Repeat Losing Quads")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "repeatLosingConstraintsNonQuads", label="Repeat Losing Non Quads")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "repeatLosingConstraintsAlign", label="Repeat Losing Align")
+        _draw_toggle_prop(advanced_panel, qr, "scene.quadpatches_props", "hardParityConstraint")
+
+        callback_header, callback_panel = advanced_panel.panel_prop(remesh, "show_callback_limits")
+        _draw_header(callback_header, "Callback Limits", icon="TIME")
+        _draw_reset_button(callback_header, "remesh_callbacks")
+        if callback_panel:
+            callback_panel.prop(qr, "callbackTimeLimit", text="Time Limit")
+            callback_panel.prop(qr, "callbackGapLimit", text="Gap Limit")
 
 
 class HALLWAYAVATAR_PT_main(Panel):
@@ -170,10 +201,10 @@ class HALLWAYAVATAR_PT_main(Panel):
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
         state = context.scene.hallway_avatar_state
-        remesh = state.qremesh_settings
+        remesh = state.qremeshify_settings
         backend_status = env.psd_backend_status()
         state_path = "scene.hallway_avatar_state"
-        remesh_path = "scene.hallway_avatar_state.qremesh_settings"
+        remesh_path = "scene.hallway_avatar_state.qremeshify_settings"
 
         source_header, source_panel = layout.panel_prop(state, "show_source_section")
         _draw_header(source_header, "See-through PSD Source", icon="FILE_IMAGE", alert=True)
@@ -191,7 +222,7 @@ class HALLWAYAVATAR_PT_main(Panel):
             import_button.scale_y = 1.8
             import_button.operator("hallway_avatar.import_psd", icon="FILE_IMAGE")
             source_panel.separator()
-            _draw_toggle_prop(source_panel, remesh, "scene.hallway_avatar_state.qremesh_settings", "auto_on_import")
+            _draw_toggle_prop(source_panel, remesh, "scene.hallway_avatar_state.qremeshify_settings", "auto_on_import")
             _draw_toggle_prop(source_panel, state, state_path, "import_facial_features")
             _draw_toggle_prop(source_panel, state, state_path, "auto_rig_on_import")
             _draw_toggle_prop(source_panel, state, state_path, "auto_setup_facial_video")
@@ -215,7 +246,7 @@ class HALLWAYAVATAR_PT_main(Panel):
                 backend_panel.operator("hallway_avatar.install_psd_backend", icon="IMPORT")
 
         remesh_header, remesh_panel = layout.panel_prop(remesh, "show_section")
-        _draw_header(remesh_header, f"Quad Remesh: {qremesh.runtime_status()}", icon="MOD_REMESH", alert=True)
+        _draw_header(remesh_header, f"QRemeshify: {qremeshify.runtime_status()}", icon="MOD_REMESH", alert=True)
         if remesh_panel:
             main_top = remesh_panel.row(align=True)
             main_top.alert = False
@@ -309,8 +340,8 @@ class HALLWAYAVATAR_PT_remesh_popover(Panel):
 
     def draw(self, context: bpy.types.Context) -> None:
         layout = self.layout
-        remesh = context.scene.hallway_avatar_state.qremesh_settings
-        _draw_remesh_settings(layout, remesh)
+        remesh = context.scene.hallway_avatar_state.qremeshify_settings
+        _draw_remesh_settings(layout, context, remesh)
 
 
 classes = (

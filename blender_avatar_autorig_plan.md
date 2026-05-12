@@ -61,7 +61,7 @@ Use this file as the living implementation plan for the Blender extension descri
 - [x] Imported visible PSD layers are cached as PNGs and converted into traced alpha meshes aligned to the PSD canvas
 - [x] See-through-aware name parsing plus geometry fallback classification implemented
 - [x] Heuristic armature generation, grounding, and first-pass binding implemented
-- [x] Hallway remesh flow migrated to a vendored Quad Remesher `qmesh` runtime inside the extension
+- [x] Hallway remesh flow migrated to a vendored QRemeshify runtime inside the extension
 - [ ] Blender runtime validation still needed
 - [x] Import Meshed Alpha tracing path adapted into the Hallway PSD import pipeline
 

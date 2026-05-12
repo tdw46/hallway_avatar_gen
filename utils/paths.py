@@ -34,8 +34,8 @@ def resources_dir() -> Path:
     return addon_root() / "resources"
 
 
-def quad_remesher_runtime_dir() -> Path:
-    return resources_dir() / "quad_remesher_engine"
+def qremeshify_runtime_dir() -> Path:
+    return resources_dir() / "qremeshify" / "lib"
 
 
 def voxel_skinning_runtime_dir() -> Path:

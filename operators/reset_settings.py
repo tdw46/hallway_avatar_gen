@@ -9,9 +9,9 @@ RESET_GROUP_ITEMS = (
     ("import_options", "Import Options", ""),
     ("alpha_thresholds", "Alpha Thresholds", ""),
     ("trace_contrast", "Trace Contrast", ""),
-    ("remesh_main", "Remesh Main", ""),
-    ("edge_loops", "Edge Loops", ""),
-    ("remesh_misc", "Remesh Misc", ""),
+    ("remesh_main", "QRemeshify Main", ""),
+    ("remesh_advanced", "QRemeshify Advanced", ""),
+    ("remesh_callbacks", "QRemeshify Callbacks", ""),
     ("remesh_filters", "Remesh Filters", ""),
 )
 
@@ -25,7 +25,9 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
 
     def execute(self, context: bpy.types.Context):
         state = context.scene.hallway_avatar_state
-        remesh = state.qremesh_settings
+        remesh = state.qremeshify_settings
+        qw = context.scene.quadwild_props
+        qr = context.scene.quadpatches_props
 
         if self.group == "import_options":
             state.ignore_hidden_layers = True
@@ -51,22 +53,39 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
             state.trace_contrast_high = 0.9
         elif self.group == "remesh_main":
             remesh.auto_on_import = True
-            remesh.target_quad_count = 3000
-            remesh.unsubdivide_iterations = 2
-            remesh.unsubdivide_target_count = 1400
-            remesh.target_count_as_input_percentage = True
-            remesh.target_edge_length = 0.02
-            remesh.adaptive_size = 100.0
-            remesh.adapt_quad_count = True
-        elif self.group == "edge_loops":
-            remesh.use_vertex_color_map = False
-            remesh.use_materials = False
-            remesh.use_normals_splitting = False
-            remesh.autodetect_hard_edges = True
-        elif self.group == "remesh_misc":
-            remesh.symmetry_x = False
-            remesh.symmetry_y = False
-            remesh.symmetry_z = False
+            qw.debug = False
+            qw.useCache = False
+            qw.enableRemesh = True
+            qw.enableSmoothing = True
+            qw.enableSharp = True
+            qw.sharpAngle = 35
+            qw.symmetryX = False
+            qw.symmetryY = False
+            qw.symmetryZ = False
+            qr.scaleFact = 10.0
+        elif self.group == "remesh_advanced":
+            qr.fixedChartClusters = 0
+            qr.alpha = 0.005
+            qr.ilpMethod = "LEASTSQUARES"
+            qr.timeLimit = 200
+            qr.gapLimit = 0.0
+            qr.minimumGap = 0.4
+            qr.isometry = True
+            qr.regularityQuadrilaterals = True
+            qr.regularityNonQuadrilaterals = True
+            qr.regularityNonQuadrilateralsWeight = 0.9
+            qr.alignSingularities = True
+            qr.alignSingularitiesWeight = 0.1
+            qr.repeatLosingConstraintsIterations = True
+            qr.repeatLosingConstraintsQuads = False
+            qr.repeatLosingConstraintsNonQuads = False
+            qr.repeatLosingConstraintsAlign = True
+            qr.hardParityConstraint = True
+            qr.flowConfig = "SIMPLE"
+            qr.satsumaConfig = "DEFAULT"
+        elif self.group == "remesh_callbacks":
+            qr.callbackTimeLimit = [3.00, 5.000, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0]
+            qr.callbackGapLimit = [0.005, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.3]
         elif self.group == "remesh_filters":
             remesh.remesh_front_hair = True
             remesh.remesh_back_hair = True

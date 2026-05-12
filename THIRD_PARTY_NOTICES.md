@@ -9,7 +9,7 @@
 - Import Meshed Alpha
   - Local reference add-on used to inform the planned alpha-to-mesh service layer
   - License in the referenced add-on manifest: `GPL-3.0-or-later`
-  - This project currently uses a fallback internal mesh generator while the fuller tracing-based adaptation is still pending
+  - Runtime tracing is implemented inside Hallway; code from the reference add-on is not vendored here
 
 ## Optional runtime dependency
 
@@ -23,9 +23,11 @@
 
 ## Vendored runtime assets
 
-- Quad Remesher runtime bundle
-  - Vendored under `resources/quad_remesher_engine`
-  - Used locally by Hallway for FBX-based remeshing through `qmesh`
+- QRemeshify runtime bundle
+  - Vendored under `resources/qremeshify`
+  - Used locally by Hallway for QuadWild tracing and QuadPatches quadrangulation
+  - Source: `/Users/tylerwalker/Downloads/QRemeshify macOS`, `/Users/tylerwalker/Downloads/QRemeshify Windows`, `/Users/tylerwalker/Downloads/QRemeshify Linux`
+  - License declared by source manifest: GPL-3.0-or-later
 
 - Voxel Skinning binaries
   - Vendored under `resources/voxel_skinning`

@@ -7,7 +7,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from bpy.types import AddonPreferences
 
-from .core import qremesh
+from .core import qremeshify
 from .utils import env, paths
 
 ADDON_ID = __package__ or "hallway_avatar_gen"
@@ -53,8 +53,8 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
         status_box.label(text=f"Wheels Dir: {paths.wheels_dir()}")
         status_box.label(text=f"Resources Dir: {paths.resources_dir()}")
         status_box.label(text=f"PSD Backend: {env.psd_backend_status(self.cache_dir)}")
-        status_box.label(text=f"Quad Remesher Backend: {qremesh.runtime_status()}")
-        status_box.label(text=f"Vendored Engine: {qremesh.engine_executable()}")
+        status_box.label(text=f"QRemeshify Backend: {qremeshify.runtime_status()}")
+        status_box.label(text=f"QRemeshify Runtime: {paths.qremeshify_runtime_dir()}")
 
         psd_backend_status = env.psd_backend_status(self.cache_dir)
         if psd_backend_status != "ready":
@@ -66,9 +66,9 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
             install_box.operator("hallway_avatar.install_psd_backend", icon="IMPORT")
 
         remesh_box = layout.box()
-        remesh_box.label(text="Quad Remesh")
-        remesh_box.label(text="Hallway now uses a vendored Quad Remesher runtime from this extension.")
-        remesh_box.label(text="It exports FBX, calls the local qmesh binary, then reapplies Hallway transfers.")
+        remesh_box.label(text="QRemeshify Remesh")
+        remesh_box.label(text="Hallway uses the vendored QRemeshify runtime from this extension.")
+        remesh_box.label(text="It runs QuadWild tracing and QuadPatches quadrangulation, then rebuilds the Blender layer.")
 
 
 classes = (HALLWAYAVATAR_Preferences,)
