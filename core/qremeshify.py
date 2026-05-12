@@ -5,7 +5,9 @@ import os
 import platform
 import re
 import stat
+import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -24,6 +26,8 @@ from .qremeshify_runtime.util import bisect, exporter, importer
 
 logger = get_logger("qremeshify")
 _BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.(?P<suffix>\d{3})$")
+_EXACT_CACHE_VERSION = "hallway-qremeshify-exact-v1"
+_RUNTIME_FINGERPRINT: str | None = None
 
 
 class QRemeshifyError(RuntimeError):
@@ -218,6 +222,90 @@ def _should_remesh_part(part: LayerPart, settings: QRemeshifySettings) -> bool:
 
 def _safe_mesh_stem(name: str) -> str:
     return "".join(c if c not in "\\/:*?<>|" else "_" for c in name).strip() or "hallway_qremeshify_mesh"
+
+
+def _hash_file(path: Path, digest: "hashlib._Hash") -> None:
+    digest.update(str(path.name).encode("utf-8", "surrogateescape"))
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+
+def _runtime_fingerprint() -> str:
+    global _RUNTIME_FINGERPRINT
+    if _RUNTIME_FINGERPRINT is not None:
+        return _RUNTIME_FINGERPRINT
+
+    runtime_dir = paths.qremeshify_runtime_dir()
+    digest = hashlib.sha256()
+    digest.update(_EXACT_CACHE_VERSION.encode("utf-8"))
+    digest.update(runtime_platform_key().encode("utf-8"))
+    for filename in _library_filenames():
+        _hash_file(runtime_dir / filename, digest)
+    config_dir = runtime_dir / "config"
+    for config_path in sorted(path for path in config_dir.rglob("*") if path.is_file()):
+        digest.update(str(config_path.relative_to(config_dir)).encode("utf-8", "surrogateescape"))
+        _hash_file(config_path, digest)
+    _RUNTIME_FINGERPRINT = digest.hexdigest()
+    return _RUNTIME_FINGERPRINT
+
+
+def _exact_cache_enabled() -> bool:
+    return os.environ.get("HALLWAY_QREMESHIFY_DISABLE_EXACT_CACHE", "").strip().lower() not in {"1", "true", "yes"}
+
+
+def _exact_cache_key(mesh_filepath: str, payload: dict) -> str:
+    digest = hashlib.sha256()
+    digest.update(_runtime_fingerprint().encode("ascii"))
+    with open(mesh_filepath, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    stable_payload = dict(payload)
+    stable_payload["mesh_path"] = "<mesh>"
+    digest.update(json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _exact_cache_paths(qpaths: _QRemeshifyPaths) -> tuple[tuple[str, str], ...]:
+    return (
+        ("input.obj", qpaths.mesh_path),
+        ("sharp.sharp", qpaths.sharp_path),
+        ("field.rosy", qpaths.field_path),
+        ("remeshed.obj", qpaths.remeshed_path),
+        ("traced.obj", qpaths.traced_path),
+        ("quadrangulation.obj", qpaths.output_path),
+        ("quadrangulation_smooth.obj", qpaths.output_smoothed_path),
+    )
+
+
+def _restore_exact_cache(cache_key: str, qpaths: _QRemeshifyPaths, final_mesh_path: str) -> bool:
+    if not _exact_cache_enabled():
+        return False
+    cache_entry = paths.ensure_cache_dir() / "qremeshify_exact" / cache_key
+    final_cache_path = cache_entry / next(name for name, path in _exact_cache_paths(qpaths) if path == final_mesh_path)
+    if not final_cache_path.is_file():
+        return False
+    for cache_name, output_path in _exact_cache_paths(qpaths):
+        cache_path = cache_entry / cache_name
+        if cache_path.is_file():
+            shutil.copy2(cache_path, output_path)
+    logger.info("QRemeshify exact cache hit -> %s", cache_key[:12])
+    return True
+
+
+def _store_exact_cache(cache_key: str, qpaths: _QRemeshifyPaths) -> None:
+    if not _exact_cache_enabled():
+        return
+    cache_entry = paths.ensure_cache_dir() / "qremeshify_exact" / cache_key
+    cache_entry.mkdir(parents=True, exist_ok=True)
+    for cache_name, output_path in _exact_cache_paths(qpaths):
+        output = Path(output_path)
+        if output.is_file():
+            shutil.copy2(output, cache_entry / cache_name)
+    (cache_entry / "manifest.json").write_text(
+        json.dumps({"version": _EXACT_CACHE_VERSION, "key": cache_key}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _solve_linear_3x3(matrix: list[list[float]], vector: list[float]) -> tuple[float, float, float] | None:
@@ -633,8 +721,16 @@ def _worker_payload(mesh_filepath: str, props, qr_props) -> dict:
 
 
 def _run_qremeshify_worker(mesh_filepath: str, qpaths: _QRemeshifyPaths, props, qr_props) -> str:
+    payload = _worker_payload(mesh_filepath, props, qr_props)
+    final_mesh_path = qpaths.output_smoothed_path if props.enableSmoothing else qpaths.output_path
+    exact_cache_key = None
+    if not payload["useCache"]:
+        exact_cache_key = _exact_cache_key(mesh_filepath, payload)
+        if _restore_exact_cache(exact_cache_key, qpaths, final_mesh_path):
+            return final_mesh_path
+
     payload_path = Path(mesh_filepath).with_suffix(".qremeshify.json")
-    payload_path.write_text(json.dumps(_worker_payload(mesh_filepath, props, qr_props), indent=2), encoding="utf-8")
+    payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     env = dict(os.environ)
     package_parent = str(paths.addon_root().parent)
     existing_pythonpath = env.get("PYTHONPATH", "")
@@ -666,9 +762,11 @@ def _run_qremeshify_worker(mesh_filepath: str, qpaths: _QRemeshifyPaths, props, 
             raise QRemeshifyError(f"QRemeshify native worker crashed with signal {signal_number}.\n{tail}")
         raise QRemeshifyError(f"QRemeshify worker failed with exit {result.returncode}.\n{tail}")
 
-    final_mesh_path = qpaths.output_smoothed_path if props.enableSmoothing else qpaths.output_path
     if not os.path.isfile(final_mesh_path):
         raise QRemeshifyError(f"QRemeshify worker finished but did not produce {final_mesh_path}")
+    if exact_cache_key is not None:
+        _store_exact_cache(exact_cache_key, qpaths)
+        logger.info("QRemeshify exact cache stored -> %s", exact_cache_key[:12])
     if result.stdout:
         logger.debug("QRemeshify worker stdout tail:\n%s", "\n".join(result.stdout.splitlines()[-20:]))
     return final_mesh_path
