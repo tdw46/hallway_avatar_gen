@@ -276,23 +276,10 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
                 self._progress(context, 76, f"Quad remeshed {self._remeshed_count} layers")
                 return False
 
-            part = candidates[self._remesh_index]
-            self._remesh_index += 1
-            obj = bpy.data.objects.get(part.imported_object_name)
-            if obj is not None:
-                try:
-                    remeshed_obj = qremeshify.remesh_object(context, obj, self._remesh_settings)
-                except qremeshify.QRemeshifyUnsupportedInput as exc:
-                    obj["hallway_avatar_qremeshify_skipped"] = str(exc)
-                    logger.warning("QRemeshify skipped %s: %s", obj.name, exc)
-                except qremeshify.QRemeshifyError as exc:
-                    obj["hallway_avatar_qremeshify_error"] = str(exc)
-                    logger.error("QRemeshify failed for %s: %s", obj.name, exc)
-                else:
-                    part.imported_object_name = remeshed_obj.name
-                    self._remeshed_count += 1
-            progress = 50 + int(26 * (self._remesh_index / max(1, len(candidates))))
-            self._progress(context, progress, f"Quad remeshing {self._remesh_index}/{len(candidates)}")
+            self._progress(context, 50, f"Quad remeshing {len(candidates)} layers in parallel")
+            self._remeshed_count = qremeshify.remesh_parts(context, candidates, self._remesh_settings)
+            self._remesh_index = len(candidates)
+            self._progress(context, 76, f"Quad remeshed {self._remeshed_count} layers")
             context.view_layer.update()
             return False
 

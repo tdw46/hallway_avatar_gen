@@ -10,6 +10,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,35 @@ class _QRemeshifyPaths:
             output_path=f"{mesh_path_without_ext}_rem_p0_0_quadrangulation.obj",
             output_smoothed_path=f"{mesh_path_without_ext}_rem_p0_0_quadrangulation_smooth.obj",
         )
+
+
+@dataclass(frozen=True)
+class _RemeshOptions:
+    debug: bool
+    enable_smoothing: bool
+    symmetry_x: bool
+    symmetry_y: bool
+    symmetry_z: bool
+
+
+@dataclass
+class _PreparedRemeshJob:
+    source_obj: bpy.types.Object | None
+    source_name: str
+    source_location: mathutils.Vector
+    collection_targets: list[bpy.types.Collection]
+    qpaths: _QRemeshifyPaths
+    payload: dict
+    payload_path: Path
+    final_mesh_path: str
+    timeout_seconds: float
+    options: _RemeshOptions
+    exact_cache_key: str | None = None
+    cache_restored: bool = False
+    process: subprocess.Popen | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+    started_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -687,6 +717,26 @@ def _python_executable() -> str:
     return sys.executable
 
 
+def _worker_env() -> dict[str, str]:
+    env = dict(os.environ)
+    package_parent = str(paths.addon_root().parent)
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = package_parent if not existing_pythonpath else f"{package_parent}{os.pathsep}{existing_pythonpath}"
+    return env
+
+
+def _worker_command(payload_path: Path) -> list[str]:
+    return [
+        _python_executable(),
+        str(Path(__file__).with_name("qremeshify_worker.py")),
+        str(payload_path),
+    ]
+
+
+def _worker_timeout_seconds(qr_props) -> float:
+    return max(300.0, min(3600.0, float(qr_props.timeLimit) + 900.0))
+
+
 def _worker_payload(mesh_filepath: str, props, qr_props) -> dict:
     return {
         "mesh_path": mesh_filepath,
@@ -720,6 +770,76 @@ def _worker_payload(mesh_filepath: str, props, qr_props) -> dict:
     }
 
 
+def _worker_tail(job: _PreparedRemeshJob, max_lines: int = 40) -> str:
+    lines: list[str] = []
+    for path in (job.stderr_path, job.stdout_path):
+        if path is None or not path.is_file():
+            continue
+        try:
+            lines.extend(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            continue
+        if lines:
+            break
+    return "\n".join(lines[-max_lines:])
+
+
+def _start_prepared_worker(job: _PreparedRemeshJob) -> None:
+    if job.cache_restored:
+        return
+    job.stdout_path = job.payload_path.with_suffix(".qremeshify.stdout.log")
+    job.stderr_path = job.payload_path.with_suffix(".qremeshify.stderr.log")
+    command = _worker_command(job.payload_path)
+    logger.info("QRemeshify worker start -> timeout=%.1fs payload=%s", job.timeout_seconds, job.payload_path)
+    with job.stdout_path.open("w", encoding="utf-8") as stdout_file, job.stderr_path.open("w", encoding="utf-8") as stderr_file:
+        job.process = subprocess.Popen(
+            command,
+            cwd=str(paths.addon_root()),
+            env=_worker_env(),
+            stdout=stdout_file,
+            stderr=stderr_file,
+            text=True,
+        )
+    job.started_at = time.monotonic()
+
+
+def _check_prepared_worker(job: _PreparedRemeshJob, *, wait: bool = False) -> bool:
+    if job.cache_restored:
+        return True
+    if job.process is None:
+        raise QRemeshifyError(f"QRemeshify worker was not started for {job.source_name}")
+    if wait:
+        while job.process.poll() is None:
+            if time.monotonic() - job.started_at > job.timeout_seconds:
+                job.process.kill()
+                job.process.wait()
+                raise QRemeshifyError(f"QRemeshify worker timed out after {int(job.timeout_seconds)} seconds")
+            time.sleep(0.25)
+    elif job.process.poll() is None:
+        if time.monotonic() - job.started_at > job.timeout_seconds:
+            job.process.kill()
+            job.process.wait()
+            raise QRemeshifyError(f"QRemeshify worker timed out after {int(job.timeout_seconds)} seconds")
+        return False
+
+    return_code = job.process.returncode
+    if return_code != 0:
+        tail = _worker_tail(job)
+        if return_code is not None and return_code < 0:
+            signal_number = -return_code
+            raise QRemeshifyError(f"QRemeshify native worker crashed with signal {signal_number}.\n{tail}")
+        raise QRemeshifyError(f"QRemeshify worker failed with exit {return_code}.\n{tail}")
+    if not os.path.isfile(job.final_mesh_path):
+        raise QRemeshifyError(f"QRemeshify worker finished but did not produce {job.final_mesh_path}")
+    if job.exact_cache_key is not None:
+        _store_exact_cache(job.exact_cache_key, job.qpaths)
+        logger.info("QRemeshify exact cache stored -> %s", job.exact_cache_key[:12])
+    stdout_tail = _worker_tail(job, max_lines=20)
+    if stdout_tail:
+        logger.debug("QRemeshify worker log tail:\n%s", stdout_tail)
+    return True
+
+
 def _run_qremeshify_worker(mesh_filepath: str, qpaths: _QRemeshifyPaths, props, qr_props) -> str:
     payload = _worker_payload(mesh_filepath, props, qr_props)
     final_mesh_path = qpaths.output_smoothed_path if props.enableSmoothing else qpaths.output_path
@@ -731,44 +851,21 @@ def _run_qremeshify_worker(mesh_filepath: str, qpaths: _QRemeshifyPaths, props, 
 
     payload_path = Path(mesh_filepath).with_suffix(".qremeshify.json")
     payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    env = dict(os.environ)
-    package_parent = str(paths.addon_root().parent)
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = package_parent if not existing_pythonpath else f"{package_parent}{os.pathsep}{existing_pythonpath}"
-    timeout_seconds = max(300.0, min(3600.0, float(qr_props.timeLimit) + 900.0))
-    command = [
-        _python_executable(),
-        str(Path(__file__).with_name("qremeshify_worker.py")),
-        str(payload_path),
-    ]
-    logger.info("QRemeshify worker start -> timeout=%.1fs payload=%s", timeout_seconds, payload_path)
-    try:
-        result = subprocess.run(
-            command,
-            cwd=str(paths.addon_root()),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise QRemeshifyError(f"QRemeshify worker timed out after {int(timeout_seconds)} seconds") from exc
-
-    if result.returncode != 0:
-        tail = "\n".join((result.stderr or result.stdout or "").splitlines()[-40:])
-        if result.returncode < 0:
-            signal_number = -result.returncode
-            raise QRemeshifyError(f"QRemeshify native worker crashed with signal {signal_number}.\n{tail}")
-        raise QRemeshifyError(f"QRemeshify worker failed with exit {result.returncode}.\n{tail}")
-
-    if not os.path.isfile(final_mesh_path):
-        raise QRemeshifyError(f"QRemeshify worker finished but did not produce {final_mesh_path}")
-    if exact_cache_key is not None:
-        _store_exact_cache(exact_cache_key, qpaths)
-        logger.info("QRemeshify exact cache stored -> %s", exact_cache_key[:12])
-    if result.stdout:
-        logger.debug("QRemeshify worker stdout tail:\n%s", "\n".join(result.stdout.splitlines()[-20:]))
+    job = _PreparedRemeshJob(
+        source_obj=None,
+        source_name=Path(mesh_filepath).stem,
+        source_location=mathutils.Vector((0.0, 0.0, 0.0)),
+        collection_targets=[],
+        qpaths=qpaths,
+        payload=payload,
+        payload_path=payload_path,
+        final_mesh_path=final_mesh_path,
+        timeout_seconds=_worker_timeout_seconds(qr_props),
+        options=_RemeshOptions(False, bool(props.enableSmoothing), False, False, False),
+        exact_cache_key=exact_cache_key,
+    )
+    _start_prepared_worker(job)
+    _check_prepared_worker(job, wait=True)
     return final_mesh_path
 
 
@@ -779,26 +876,17 @@ def _link_debug_mesh(context: bpy.types.Context, source_obj: bpy.types.Object, m
     obj.hide_set(True)
 
 
-def remesh_object(
-    context: bpy.types.Context,
-    source_obj: bpy.types.Object,
-    settings: QRemeshifySettings,
-) -> bpy.types.Object:
-    source_name = source_obj.name
-    if source_obj.type != "MESH":
-        raise QRemeshifyError(f"{source_name} is not a mesh.")
-    if len(source_obj.data.polygons) == 0:
-        raise QRemeshifyError(f"{source_name} has no faces to remesh.")
+def _snapshot_remesh_options(props) -> _RemeshOptions:
+    return _RemeshOptions(
+        debug=bool(props.debug),
+        enable_smoothing=bool(props.enableSmoothing),
+        symmetry_x=bool(props.symmetryX),
+        symmetry_y=bool(props.symmetryY),
+        symmetry_z=bool(props.symmetryZ),
+    )
 
-    ensure_runtime()
-    props, qr_props = _scene_qremeshify_props(context)
-    cache_dir = paths.ensure_cache_dir() / "qremeshify"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    mesh_filepath = str(cache_dir / f"{_safe_mesh_stem(source_name)}.obj")
-    qpaths = _QRemeshifyPaths.from_mesh_path(mesh_filepath)
-    source_location = source_obj.location.copy()
-    collection_targets = list(source_obj.users_collection) or [context.scene.collection]
 
+def _log_remesh_input(source_name: str, props, qr_props) -> None:
     logger.info(
         "QRemeshify input %s -> scaleFact=%.3f fixedChartClusters=%s remesh=%s smoothing=%s sharp=%s angle=%.1f flow=%s satsuma=%s timeLimit=%s",
         source_name,
@@ -813,46 +901,118 @@ def remesh_object(
         qr_props.timeLimit,
     )
 
+
+def _prepare_remesh_job(context: bpy.types.Context, source_obj: bpy.types.Object) -> _PreparedRemeshJob:
+    source_name = source_obj.name
+    if source_obj.type != "MESH":
+        raise QRemeshifyError(f"{source_name} is not a mesh.")
+    if len(source_obj.data.polygons) == 0:
+        raise QRemeshifyError(f"{source_name} has no faces to remesh.")
+
+    props, qr_props = _scene_qremeshify_props(context)
+    cache_dir = paths.ensure_cache_dir() / "qremeshify"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mesh_filepath = str(cache_dir / f"{_safe_mesh_stem(source_name)}.obj")
+    qpaths = _QRemeshifyPaths.from_mesh_path(mesh_filepath)
+    source_location = source_obj.location.copy()
+    collection_targets = list(source_obj.users_collection) or [context.scene.collection]
+    _log_remesh_input(source_name, props, qr_props)
+
     bm = None
     evaluated_obj = None
     try:
         if not props.useCache:
             bm, evaluated_obj = _export_input_mesh(context, source_obj, mesh_filepath, qpaths)
-        final_mesh_path = _run_qremeshify_worker(mesh_filepath, qpaths, props, qr_props)
-        if props.debug and os.path.isfile(qpaths.remeshed_path):
-            _link_debug_mesh(context, source_obj, qpaths.remeshed_path, "remeshAndField")
-        if props.debug and os.path.isfile(qpaths.traced_path):
-            _link_debug_mesh(context, source_obj, qpaths.traced_path, "trace")
-        if props.debug and props.enableSmoothing:
-            _link_debug_mesh(context, source_obj, qpaths.output_path, "quadrangulate")
-
-        final_mesh = importer.import_mesh(final_mesh_path)
-        final_obj = bpy.data.objects.new(f"{source_obj.name}__hallway_qremeshify", final_mesh)
-        final_obj.location = source_location
-        if props.symmetryX or props.symmetryY or props.symmetryZ:
-            mirror_modifier = final_obj.modifiers.new("Mirror", "MIRROR")
-            mirror_modifier.use_axis[0] = props.symmetryX
-            mirror_modifier.use_axis[1] = props.symmetryY
-            mirror_modifier.use_axis[2] = props.symmetryZ
-            mirror_modifier.use_clip = True
-            mirror_modifier.merge_threshold = 0.001
-        for collection in collection_targets:
-            collection.objects.link(final_obj)
-        replaced = _replace_source_object(context, source_obj, final_obj)
-        logger.info(
-            "QRemeshify replaced %s with %s -> verts=%s faces=%s quads=%s",
-            source_name,
-            replaced.name,
-            len(replaced.data.vertices),
-            len(replaced.data.polygons),
-            sum(1 for polygon in replaced.data.polygons if polygon.loop_total == 4),
-        )
-        return replaced
     finally:
         if bm is not None:
             bm.free()
         if evaluated_obj is not None:
             evaluated_obj.to_mesh_clear()
+
+    payload = _worker_payload(mesh_filepath, props, qr_props)
+    final_mesh_path = qpaths.output_smoothed_path if props.enableSmoothing else qpaths.output_path
+    exact_cache_key = None
+    cache_restored = False
+    if not payload["useCache"]:
+        exact_cache_key = _exact_cache_key(mesh_filepath, payload)
+        cache_restored = _restore_exact_cache(exact_cache_key, qpaths, final_mesh_path)
+
+    payload_path = Path(mesh_filepath).with_suffix(".qremeshify.json")
+    if not cache_restored:
+        payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    return _PreparedRemeshJob(
+        source_obj=source_obj,
+        source_name=source_name,
+        source_location=source_location,
+        collection_targets=collection_targets,
+        qpaths=qpaths,
+        payload=payload,
+        payload_path=payload_path,
+        final_mesh_path=final_mesh_path,
+        timeout_seconds=_worker_timeout_seconds(qr_props),
+        options=_snapshot_remesh_options(props),
+        exact_cache_key=exact_cache_key,
+        cache_restored=cache_restored,
+    )
+
+
+def _finish_remesh_job(context: bpy.types.Context, job: _PreparedRemeshJob) -> bpy.types.Object:
+    source_obj = job.source_obj
+    if source_obj is None:
+        raise QRemeshifyError(f"QRemeshify job has no source object for {job.source_name}")
+    if job.options.debug and os.path.isfile(job.qpaths.remeshed_path):
+        _link_debug_mesh(context, source_obj, job.qpaths.remeshed_path, "remeshAndField")
+    if job.options.debug and os.path.isfile(job.qpaths.traced_path):
+        _link_debug_mesh(context, source_obj, job.qpaths.traced_path, "trace")
+    if job.options.debug and job.options.enable_smoothing:
+        _link_debug_mesh(context, source_obj, job.qpaths.output_path, "quadrangulate")
+
+    final_mesh = importer.import_mesh(job.final_mesh_path)
+    final_obj = bpy.data.objects.new(f"{source_obj.name}__hallway_qremeshify", final_mesh)
+    final_obj.location = job.source_location
+    if job.options.symmetry_x or job.options.symmetry_y or job.options.symmetry_z:
+        mirror_modifier = final_obj.modifiers.new("Mirror", "MIRROR")
+        mirror_modifier.use_axis[0] = job.options.symmetry_x
+        mirror_modifier.use_axis[1] = job.options.symmetry_y
+        mirror_modifier.use_axis[2] = job.options.symmetry_z
+        mirror_modifier.use_clip = True
+        mirror_modifier.merge_threshold = 0.001
+    for collection in job.collection_targets:
+        collection.objects.link(final_obj)
+    replaced = _replace_source_object(context, source_obj, final_obj)
+    logger.info(
+        "QRemeshify replaced %s with %s -> verts=%s faces=%s quads=%s",
+        job.source_name,
+        replaced.name,
+        len(replaced.data.vertices),
+        len(replaced.data.polygons),
+        sum(1 for polygon in replaced.data.polygons if polygon.loop_total == 4),
+    )
+    return replaced
+
+
+def remesh_object(
+    context: bpy.types.Context,
+    source_obj: bpy.types.Object,
+    settings: QRemeshifySettings,
+) -> bpy.types.Object:
+    ensure_runtime()
+    job = _prepare_remesh_job(context, source_obj)
+    _start_prepared_worker(job)
+    _check_prepared_worker(job, wait=True)
+    return _finish_remesh_job(context, job)
+
+
+def _parallel_worker_limit(candidate_count: int) -> int:
+    env_value = os.environ.get("HALLWAY_QREMESHIFY_MAX_WORKERS", "").strip()
+    if env_value:
+        try:
+            return max(1, min(candidate_count, int(env_value)))
+        except ValueError:
+            logger.warning("Ignoring invalid HALLWAY_QREMESHIFY_MAX_WORKERS=%r", env_value)
+    cpu_count = os.cpu_count() or 2
+    return max(1, min(candidate_count, 2 if cpu_count < 10 else 3))
 
 
 def remesh_parts(
@@ -869,13 +1029,18 @@ def remesh_parts(
         if intersected:
             candidate_parts = intersected
 
+    ensure_runtime()
+    worker_limit = _parallel_worker_limit(len(candidate_parts))
+    logger.info("QRemeshify batch -> candidates=%s parallel_workers=%s", len(candidate_parts), worker_limit)
+
+    prepared_jobs: list[tuple[LayerPart, _PreparedRemeshJob]] = []
     remeshed_count = 0
     for part in candidate_parts:
         obj = bpy.data.objects.get(part.imported_object_name)
         if obj is None:
             continue
         try:
-            remeshed_obj = remesh_object(context, obj, settings)
+            prepared_jobs.append((part, _prepare_remesh_job(context, obj)))
         except QRemeshifyUnsupportedInput as exc:
             obj["hallway_avatar_qremeshify_skipped"] = str(exc)
             logger.warning("QRemeshify skipped %s: %s", obj.name, exc)
@@ -883,6 +1048,47 @@ def remesh_parts(
         except QRemeshifyError as exc:
             obj["hallway_avatar_qremeshify_error"] = str(exc)
             logger.error("QRemeshify failed for %s: %s", obj.name, exc)
+            continue
+
+    running: list[tuple[LayerPart, _PreparedRemeshJob]] = []
+    pending = list(prepared_jobs)
+    completed: list[tuple[LayerPart, _PreparedRemeshJob]] = []
+    while pending or running:
+        while pending and len(running) < worker_limit:
+            part, job = pending.pop(0)
+            try:
+                _start_prepared_worker(job)
+                if job.cache_restored:
+                    completed.append((part, job))
+                else:
+                    running.append((part, job))
+            except QRemeshifyError as exc:
+                if job.source_obj is not None:
+                    job.source_obj["hallway_avatar_qremeshify_error"] = str(exc)
+                logger.error("QRemeshify failed for %s: %s", job.source_name, exc)
+
+        still_running: list[tuple[LayerPart, _PreparedRemeshJob]] = []
+        for part, job in running:
+            try:
+                if _check_prepared_worker(job, wait=False):
+                    completed.append((part, job))
+                else:
+                    still_running.append((part, job))
+            except QRemeshifyError as exc:
+                if job.source_obj is not None:
+                    job.source_obj["hallway_avatar_qremeshify_error"] = str(exc)
+                logger.error("QRemeshify failed for %s: %s", job.source_name, exc)
+        running = still_running
+        if pending or running:
+            time.sleep(0.5)
+
+    for part, job in completed:
+        try:
+            remeshed_obj = _finish_remesh_job(context, job)
+        except QRemeshifyError as exc:
+            if job.source_obj is not None:
+                job.source_obj["hallway_avatar_qremeshify_error"] = str(exc)
+            logger.error("QRemeshify failed for %s: %s", job.source_name, exc)
             continue
         part.imported_object_name = remeshed_obj.name
         remeshed_count += 1
