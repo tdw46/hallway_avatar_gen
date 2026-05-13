@@ -135,6 +135,7 @@ def _draw_remesh_settings(layout: bpy.types.UILayout, context: bpy.types.Context
 
     _draw_group_title(layout, "QRemeshify", icon="MOD_REMESH")
     _draw_toggle_prop(layout, remesh, remesh_path, "auto_on_import")
+    _draw_toggle_prop(layout, remesh, remesh_path, "use_fast_planar_strips")
     layout.prop(qr, "scaleFact", text="Density")
     layout.prop(qr, "fixedChartClusters")
     layout.separator()

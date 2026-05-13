@@ -53,8 +53,7 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
         status_box.label(text=f"Wheels Dir: {paths.wheels_dir()}")
         status_box.label(text=f"Resources Dir: {paths.resources_dir()}")
         status_box.label(text=f"PSD Backend: {env.psd_backend_status(self.cache_dir)}")
-        status_box.label(text=f"QRemeshify Backend: {qremeshify.runtime_status()}")
-        status_box.label(text=f"QRemeshify Runtime: {paths.qremeshify_runtime_dir()}")
+        status_box.label(text="Planar Remesh Backend: Hallway strip remesh")
 
         psd_backend_status = env.psd_backend_status(self.cache_dir)
         if psd_backend_status != "ready":
@@ -66,9 +65,9 @@ class HALLWAYAVATAR_Preferences(AddonPreferences):
             install_box.operator("hallway_avatar.install_psd_backend", icon="IMPORT")
 
         remesh_box = layout.box()
-        remesh_box.label(text="QRemeshify Remesh")
-        remesh_box.label(text="Hallway uses the vendored QRemeshify runtime from this extension.")
-        remesh_box.label(text="It runs QuadWild tracing and QuadPatches quadrangulation, then rebuilds the Blender layer.")
+        remesh_box.label(text="Hallway Planar Remesh")
+        remesh_box.label(text="Hallway uses the fast contour/quadrant remesher for flat PSD layer silhouettes.")
+        remesh_box.label(text="Legacy native QRemeshify fallback is disabled.")
 
 
 classes = (HALLWAYAVATAR_Preferences,)

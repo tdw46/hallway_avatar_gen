@@ -53,6 +53,7 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
             state.trace_contrast_high = 0.9
         elif self.group == "remesh_main":
             remesh.auto_on_import = True
+            remesh.use_fast_planar_strips = True
             qw.debug = False
             qw.useCache = False
             qw.enableRemesh = True

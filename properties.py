@@ -52,18 +52,23 @@ class HALLWAYAVATAR_PG_qremeshify_settings(PropertyGroup):
     )
     show_main_settings_section: BoolProperty(
         name="Show Main Remesh Settings",
-        description="Expand or collapse the main QRemeshify settings section",
+        description="Expand or collapse the main remesh settings section",
         default=True,
     )
     show_advanced_qremeshify: BoolProperty(
-        name="Show Advanced QRemeshify Settings",
-        description="Expand or collapse QRemeshify advanced controls",
+        name="Show Advanced Remesh Settings",
+        description="Expand or collapse advanced remesh controls",
         default=False,
     )
-    show_callback_limits: BoolProperty(name="Show Callback Limits", description="Expand or collapse QRemeshify callback limit controls", default=False)
+    show_callback_limits: BoolProperty(name="Show Callback Limits", description="Expand or collapse remesh callback limit controls", default=False)
     auto_on_import: BoolProperty(
         name="Auto Remesh On Import",
         description="Run quad remesh automatically after PSD layers are imported",
+        default=True,
+    )
+    use_fast_planar_strips: BoolProperty(
+        name="Hallway Planar Remesh",
+        description="Use the fast contour/quadrant remesher for flat PSD layer silhouettes",
         default=True,
     )
     show_advanced_filters: BoolProperty(

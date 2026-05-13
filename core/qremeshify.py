@@ -21,7 +21,7 @@ from mathutils import Vector
 
 from ..utils import paths
 from ..utils.logging import get_logger
-from . import seethrough_naming
+from . import seethrough_naming, strip_remesh
 from .models import LayerPart
 from .qremeshify_runtime.util import bisect, exporter, importer
 
@@ -107,6 +107,7 @@ class QRemeshifySettings:
     remesh_wings: bool = False
     remesh_objects: bool = False
     remesh_unclassified: bool = False
+    use_fast_planar_strips: bool = True
 
     @classmethod
     def from_scene_state(cls, state) -> "QRemeshifySettings":
@@ -125,6 +126,7 @@ class QRemeshifySettings:
             remesh_wings=props.remesh_wings,
             remesh_objects=props.remesh_objects,
             remesh_unclassified=props.remesh_unclassified,
+            use_fast_planar_strips=props.use_fast_planar_strips,
         )
 
 
@@ -400,12 +402,38 @@ def _mesh_plane_axes_world(source_obj: bpy.types.Object) -> tuple[int, int]:
     if len(source_obj.data.vertices) < 2:
         return (0, 1)
     world_coords = [source_obj.matrix_world @ vert.co for vert in source_obj.data.vertices]
+    return _mesh_plane_axes_from_coords(world_coords)
+
+
+def _mesh_plane_axes_from_coords(coords: list[mathutils.Vector]) -> tuple[int, int]:
+    if len(coords) < 2:
+        return (0, 1)
     spans = []
     for axis_index in range(3):
-        axis_values = [coord[axis_index] for coord in world_coords]
+        axis_values = [coord[axis_index] for coord in coords]
         spans.append(max(axis_values) - min(axis_values))
     sorted_axes = sorted(range(3), key=lambda axis_index: spans[axis_index], reverse=True)
     return (sorted_axes[0], sorted_axes[1])
+
+
+def _target_coords_in_source_uv_space(target_obj: bpy.types.Object) -> list[mathutils.Vector] | None:
+    values = target_obj.get("hallway_avatar_strip_source_rs_inverse")
+    try:
+        values = list(values)
+    except TypeError:
+        return None
+    if len(values) != 16:
+        return None
+    try:
+        matrix = mathutils.Matrix((
+            values[0:4],
+            values[4:8],
+            values[8:12],
+            values[12:16],
+        ))
+    except Exception:
+        return None
+    return [matrix @ vertex.co for vertex in target_obj.data.vertices]
 
 
 def _project_flat_uvs_from_source(source_obj: bpy.types.Object, target_obj: bpy.types.Object) -> bool:
@@ -416,9 +444,15 @@ def _project_flat_uvs_from_source(source_obj: bpy.types.Object, target_obj: bpy.
     if len(source_obj.data.loops) == 0 or len(target_obj.data.loops) == 0:
         return False
 
-    plane_axis_a, plane_axis_b = _mesh_plane_axes_world(source_obj)
-    source_world = [source_obj.matrix_world @ vert.co for vert in source_obj.data.vertices]
-    target_world = [target_obj.matrix_world @ vert.co for vert in target_obj.data.vertices]
+    target_source_space = _target_coords_in_source_uv_space(target_obj)
+    if target_source_space is not None:
+        source_coords = [vert.co.copy() for vert in source_obj.data.vertices]
+        target_coords = target_source_space
+        plane_axis_a, plane_axis_b = _mesh_plane_axes_from_coords(source_coords)
+    else:
+        plane_axis_a, plane_axis_b = _mesh_plane_axes_world(source_obj)
+        source_coords = [source_obj.matrix_world @ vert.co for vert in source_obj.data.vertices]
+        target_coords = [target_obj.matrix_world @ vert.co for vert in target_obj.data.vertices]
 
     success = False
     while len(target_obj.data.uv_layers) < len(source_obj.data.uv_layers):
@@ -435,9 +469,9 @@ def _project_flat_uvs_from_source(source_obj: bpy.types.Object, target_obj: bpy.
         uv_max = Vector((max(uv.x for uv in uv_values), max(uv.y for uv in uv_values)))
 
         for loop in source_obj.data.loops:
-            world_co = source_world[loop.vertex_index]
-            coord_a = float(world_co[plane_axis_a])
-            coord_b = float(world_co[plane_axis_b])
+            source_co = source_coords[loop.vertex_index]
+            coord_a = float(source_co[plane_axis_a])
+            coord_b = float(source_co[plane_axis_b])
             uv = source_uv_layer.data[loop.index].uv
             source_samples_u.append((coord_a, coord_b, float(uv.x)))
             source_samples_v.append((coord_a, coord_b, float(uv.y)))
@@ -455,9 +489,9 @@ def _project_flat_uvs_from_source(source_obj: bpy.types.Object, target_obj: bpy.
             coeff_v = (0.0, linear_v[0], linear_v[1])
 
         for loop in target_obj.data.loops:
-            world_co = target_world[loop.vertex_index]
-            coord_a = float(world_co[plane_axis_a])
-            coord_b = float(world_co[plane_axis_b])
+            target_co = target_coords[loop.vertex_index]
+            coord_a = float(target_co[plane_axis_a])
+            coord_b = float(target_co[plane_axis_b])
             u_value = (coeff_u[0] * coord_a) + (coeff_u[1] * coord_b) + coeff_u[2]
             v_value = (coeff_v[0] * coord_a) + (coeff_v[1] * coord_b) + coeff_v[2]
             target_uv_layer.data[loop.index].uv = Vector((
@@ -638,13 +672,13 @@ def _replace_source_object(context: bpy.types.Context, source_obj: bpy.types.Obj
     _copy_input_shading(source_obj, new_obj)
     _copy_custom_properties(source_obj, new_obj)
     _copy_display_settings(source_obj, new_obj)
+    if source_obj.vertex_groups:
+        _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_vertex_groups=True)
+    _preserve_parent(source_obj, new_obj)
     if source_obj.data and source_obj.data.uv_layers:
         if not _project_flat_uvs_from_source(source_obj, new_obj):
             _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_uvs=True)
         _prune_uv_layers(source_obj, new_obj)
-    if source_obj.vertex_groups:
-        _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_vertex_groups=True)
-    _preserve_parent(source_obj, new_obj)
     bpy.data.objects.remove(source_obj, do_unlink=True)
     new_obj.name = original_name
     new_obj.data.name = original_mesh_name
@@ -997,22 +1031,34 @@ def remesh_object(
     source_obj: bpy.types.Object,
     settings: QRemeshifySettings,
 ) -> bpy.types.Object:
-    ensure_runtime()
-    job = _prepare_remesh_job(context, source_obj)
-    _start_prepared_worker(job)
-    _check_prepared_worker(job, wait=True)
-    return _finish_remesh_job(context, job)
+    _, qr_props = _scene_qremeshify_props(context)
+    try:
+        strip_obj = strip_remesh.remesh_object(
+            context,
+            source_obj,
+            scale_factor=float(qr_props.scaleFact),
+            enabled=settings.use_fast_planar_strips,
+        )
+    except strip_remesh.StripRemeshUnsupported as exc:
+        strip_obj = None
+        if settings.use_fast_planar_strips and not _allow_qremeshify_fallback():
+            source_obj["hallway_avatar_strip_remesh_skipped"] = str(exc)
+            raise QRemeshifyUnsupportedInput(f"Strip remesh skipped {source_obj.name}: {exc}") from exc
+        logger.debug("Strip remesh unsupported for %s: %s", source_obj.name, exc)
+    except Exception as exc:
+        source_obj["hallway_avatar_strip_remesh_error"] = str(exc)
+        logger.exception("Strip remesh failed for %s", source_obj.name)
+        if settings.use_fast_planar_strips and not _allow_qremeshify_fallback():
+            raise QRemeshifyError(f"Strip remesh failed for {source_obj.name}: {exc}") from exc
+        strip_obj = None
+    if strip_obj is not None:
+        return _replace_source_object(context, source_obj, strip_obj)
+
+    raise QRemeshifyUnsupportedInput(f"Hallway planar remesh did not produce output for {source_obj.name}")
 
 
-def _parallel_worker_limit(candidate_count: int) -> int:
-    env_value = os.environ.get("HALLWAY_QREMESHIFY_MAX_WORKERS", "").strip()
-    if env_value:
-        try:
-            return max(1, min(candidate_count, int(env_value)))
-        except ValueError:
-            logger.warning("Ignoring invalid HALLWAY_QREMESHIFY_MAX_WORKERS=%r", env_value)
-    cpu_count = os.cpu_count() or 2
-    return max(1, min(candidate_count, 2 if cpu_count < 10 else 3))
+def _allow_qremeshify_fallback() -> bool:
+    return False
 
 
 def remesh_parts(
@@ -1029,68 +1075,40 @@ def remesh_parts(
         if intersected:
             candidate_parts = intersected
 
-    ensure_runtime()
-    worker_limit = _parallel_worker_limit(len(candidate_parts))
-    logger.info("QRemeshify batch -> candidates=%s parallel_workers=%s", len(candidate_parts), worker_limit)
+    _, qr_props = _scene_qremeshify_props(context)
+    logger.info(
+        "Remesh batch -> candidates=%s fast_planar_strips=%s qremeshify_fallback=%s",
+        len(candidate_parts),
+        settings.use_fast_planar_strips,
+        _allow_qremeshify_fallback(),
+    )
 
-    prepared_jobs: list[tuple[LayerPart, _PreparedRemeshJob]] = []
     remeshed_count = 0
     for part in candidate_parts:
         obj = bpy.data.objects.get(part.imported_object_name)
         if obj is None:
             continue
         try:
-            prepared_jobs.append((part, _prepare_remesh_job(context, obj)))
-        except QRemeshifyUnsupportedInput as exc:
-            obj["hallway_avatar_qremeshify_skipped"] = str(exc)
-            logger.warning("QRemeshify skipped %s: %s", obj.name, exc)
+            strip_obj = strip_remesh.remesh_object(
+                context,
+                obj,
+                scale_factor=float(qr_props.scaleFact),
+                enabled=settings.use_fast_planar_strips,
+            )
+            if strip_obj is not None:
+                remeshed_obj = _replace_source_object(context, obj, strip_obj)
+                part.imported_object_name = remeshed_obj.name
+                remeshed_count += 1
+                continue
+        except strip_remesh.StripRemeshUnsupported as exc:
+            obj["hallway_avatar_strip_remesh_skipped"] = str(exc)
+            if settings.use_fast_planar_strips and not _allow_qremeshify_fallback():
+                logger.warning("Strip remesh skipped %s: %s", obj.name, exc)
+                continue
+            logger.debug("Strip remesh unsupported for %s: %s", obj.name, exc)
+        except Exception as exc:
+            obj["hallway_avatar_strip_remesh_error"] = str(exc)
+            logger.exception("Strip remesh failed for %s", obj.name)
             continue
-        except QRemeshifyError as exc:
-            obj["hallway_avatar_qremeshify_error"] = str(exc)
-            logger.error("QRemeshify failed for %s: %s", obj.name, exc)
-            continue
-
-    running: list[tuple[LayerPart, _PreparedRemeshJob]] = []
-    pending = list(prepared_jobs)
-    completed: list[tuple[LayerPart, _PreparedRemeshJob]] = []
-    while pending or running:
-        while pending and len(running) < worker_limit:
-            part, job = pending.pop(0)
-            try:
-                _start_prepared_worker(job)
-                if job.cache_restored:
-                    completed.append((part, job))
-                else:
-                    running.append((part, job))
-            except QRemeshifyError as exc:
-                if job.source_obj is not None:
-                    job.source_obj["hallway_avatar_qremeshify_error"] = str(exc)
-                logger.error("QRemeshify failed for %s: %s", job.source_name, exc)
-
-        still_running: list[tuple[LayerPart, _PreparedRemeshJob]] = []
-        for part, job in running:
-            try:
-                if _check_prepared_worker(job, wait=False):
-                    completed.append((part, job))
-                else:
-                    still_running.append((part, job))
-            except QRemeshifyError as exc:
-                if job.source_obj is not None:
-                    job.source_obj["hallway_avatar_qremeshify_error"] = str(exc)
-                logger.error("QRemeshify failed for %s: %s", job.source_name, exc)
-        running = still_running
-        if pending or running:
-            time.sleep(0.5)
-
-    for part, job in completed:
-        try:
-            remeshed_obj = _finish_remesh_job(context, job)
-        except QRemeshifyError as exc:
-            if job.source_obj is not None:
-                job.source_obj["hallway_avatar_qremeshify_error"] = str(exc)
-            logger.error("QRemeshify failed for %s: %s", job.source_name, exc)
-            continue
-        part.imported_object_name = remeshed_obj.name
-        remeshed_count += 1
     context.view_layer.update()
     return remeshed_count

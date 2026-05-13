@@ -9,13 +9,13 @@ Hallway Avatar Gen is a Blender 5.0 extension for importing See-through-style la
 - Fast traced alpha meshing adapted from the local Meshed Alpha workflow
 - See-through-aware semantic classification and draw-order-preserving layer stacking
 - Grounded mesh placement plus first-pass Stretchy-style armature generation and weighting
-- Optional voxel-style binding and vendored QRemeshify remeshing support for imported sheets
+- Optional voxel-style binding, fast planar strip remeshing for flat PSD layers, and vendored QRemeshify fallback support
 
 ## Current limitations
 
 - Hallway is still positioned as an import-and-rig tool first, not a finished one-click 2.5-D avatar generator yet
 - Gemini-assisted avatar generation and full See-through image parsing are still planned follow-up work
-- Quad remeshing now uses the vendored QRemeshify runtime shipped inside this extension
+- Flat PSD layer remeshing defaults to the fast strip-based planar mesher. QRemeshify fallback is opt-in with `HALLWAY_ALLOW_QREMESHIFY_FALLBACK=1`.
 
 ## Usage
 
