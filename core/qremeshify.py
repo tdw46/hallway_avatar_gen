@@ -21,7 +21,7 @@ from mathutils import Vector
 
 from ..utils import paths
 from ..utils.logging import get_logger
-from . import seethrough_naming, strip_remesh
+from . import hohqmesh_remesh, seethrough_naming
 from .models import LayerPart
 from .qremeshify_runtime.util import bisect, exporter, importer
 
@@ -417,7 +417,9 @@ def _mesh_plane_axes_from_coords(coords: list[mathutils.Vector]) -> tuple[int, i
 
 
 def _target_coords_in_source_uv_space(target_obj: bpy.types.Object) -> list[mathutils.Vector] | None:
-    values = target_obj.get("hallway_avatar_strip_source_rs_inverse")
+    values = target_obj.get("hallway_avatar_hohqmesh_source_rs_inverse")
+    if values is None:
+        values = target_obj.get("hallway_avatar_strip_source_rs_inverse")
     try:
         values = list(values)
     except TypeError:
@@ -676,9 +678,9 @@ def _replace_source_object(context: bpy.types.Context, source_obj: bpy.types.Obj
         _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_vertex_groups=True)
     _preserve_parent(source_obj, new_obj)
     if source_obj.data and source_obj.data.uv_layers:
+        _prune_uv_layers(source_obj, new_obj)
         if not _project_flat_uvs_from_source(source_obj, new_obj):
             _apply_data_transfer_modifier(context, source_obj, new_obj, transfer_uvs=True)
-        _prune_uv_layers(source_obj, new_obj)
     bpy.data.objects.remove(source_obj, do_unlink=True)
     new_obj.name = original_name
     new_obj.data.name = original_mesh_name
@@ -1033,23 +1035,23 @@ def remesh_object(
 ) -> bpy.types.Object:
     _, qr_props = _scene_qremeshify_props(context)
     try:
-        strip_obj = strip_remesh.remesh_object(
+        strip_obj = hohqmesh_remesh.remesh_object(
             context,
             source_obj,
             scale_factor=float(qr_props.scaleFact),
             enabled=settings.use_fast_planar_strips,
         )
-    except strip_remesh.StripRemeshUnsupported as exc:
+    except hohqmesh_remesh.StripRemeshUnsupported as exc:
         strip_obj = None
         if settings.use_fast_planar_strips and not _allow_qremeshify_fallback():
-            source_obj["hallway_avatar_strip_remesh_skipped"] = str(exc)
-            raise QRemeshifyUnsupportedInput(f"Strip remesh skipped {source_obj.name}: {exc}") from exc
-        logger.debug("Strip remesh unsupported for %s: %s", source_obj.name, exc)
+            source_obj["hallway_avatar_hohqmesh_skipped"] = str(exc)
+            raise QRemeshifyUnsupportedInput(f"HOHQMesh remesh skipped {source_obj.name}: {exc}") from exc
+        logger.debug("HOHQMesh remesh unsupported for %s: %s", source_obj.name, exc)
     except Exception as exc:
-        source_obj["hallway_avatar_strip_remesh_error"] = str(exc)
-        logger.exception("Strip remesh failed for %s", source_obj.name)
+        source_obj["hallway_avatar_hohqmesh_error"] = str(exc)
+        logger.exception("HOHQMesh remesh failed for %s", source_obj.name)
         if settings.use_fast_planar_strips and not _allow_qremeshify_fallback():
-            raise QRemeshifyError(f"Strip remesh failed for {source_obj.name}: {exc}") from exc
+            raise QRemeshifyError(f"HOHQMesh remesh failed for {source_obj.name}: {exc}") from exc
         strip_obj = None
     if strip_obj is not None:
         return _replace_source_object(context, source_obj, strip_obj)
@@ -1077,7 +1079,7 @@ def remesh_parts(
 
     _, qr_props = _scene_qremeshify_props(context)
     logger.info(
-        "Remesh batch -> candidates=%s fast_planar_strips=%s qremeshify_fallback=%s",
+        "Remesh batch -> candidates=%s hohqmesh_enabled=%s qremeshify_fallback=%s",
         len(candidate_parts),
         settings.use_fast_planar_strips,
         _allow_qremeshify_fallback(),
@@ -1089,7 +1091,7 @@ def remesh_parts(
         if obj is None:
             continue
         try:
-            strip_obj = strip_remesh.remesh_object(
+            strip_obj = hohqmesh_remesh.remesh_object(
                 context,
                 obj,
                 scale_factor=float(qr_props.scaleFact),
@@ -1100,15 +1102,15 @@ def remesh_parts(
                 part.imported_object_name = remeshed_obj.name
                 remeshed_count += 1
                 continue
-        except strip_remesh.StripRemeshUnsupported as exc:
-            obj["hallway_avatar_strip_remesh_skipped"] = str(exc)
+        except hohqmesh_remesh.StripRemeshUnsupported as exc:
+            obj["hallway_avatar_hohqmesh_skipped"] = str(exc)
             if settings.use_fast_planar_strips and not _allow_qremeshify_fallback():
-                logger.warning("Strip remesh skipped %s: %s", obj.name, exc)
+                logger.warning("HOHQMesh remesh skipped %s: %s", obj.name, exc)
                 continue
-            logger.debug("Strip remesh unsupported for %s: %s", obj.name, exc)
+            logger.debug("HOHQMesh remesh unsupported for %s: %s", obj.name, exc)
         except Exception as exc:
-            obj["hallway_avatar_strip_remesh_error"] = str(exc)
-            logger.exception("Strip remesh failed for %s", obj.name)
+            obj["hallway_avatar_hohqmesh_error"] = str(exc)
+            logger.exception("HOHQMesh remesh failed for %s", obj.name)
             continue
     context.view_layer.update()
     return remeshed_count

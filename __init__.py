@@ -22,6 +22,7 @@ MODULES = [
     "core.mtoon_materials",
     "core.facial_video_preview",
     "core.strip_remesh",
+    "core.hohqmesh_remesh",
     "core.qremeshify_runtime.lib.data",
     "core.qremeshify_runtime.lib",
     "core.qremeshify_runtime.util.bisect",
