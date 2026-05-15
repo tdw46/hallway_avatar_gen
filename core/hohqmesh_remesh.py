@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+from heapq import heappop, heappush
 from pathlib import Path
 
 import bpy
@@ -158,6 +159,74 @@ def _point_segment_distance(
     return math.hypot(px - qx, py - qy)
 
 
+def _segments_intersect(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> bool:
+    def orient(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> float:
+        return ((q[0] - p[0]) * (r[1] - p[1])) - ((q[1] - p[1]) * (r[0] - p[0]))
+
+    def on_segment(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> bool:
+        return (
+            min(p[0], r[0]) - _EPS <= q[0] <= max(p[0], r[0]) + _EPS
+            and min(p[1], r[1]) - _EPS <= q[1] <= max(p[1], r[1]) + _EPS
+            and abs(orient(p, q, r)) <= _EPS
+        )
+
+    o1 = orient(a, b, c)
+    o2 = orient(a, b, d)
+    o3 = orient(c, d, a)
+    o4 = orient(c, d, b)
+    if (o1 * o2 < -_EPS) and (o3 * o4 < -_EPS):
+        return True
+    return (
+        on_segment(a, c, b)
+        or on_segment(a, d, b)
+        or on_segment(c, a, d)
+        or on_segment(c, b, d)
+    )
+
+
+def _loop_has_self_intersections(loop: list[tuple[float, float]]) -> bool:
+    if len(loop) < 4:
+        return False
+    for i, a in enumerate(loop):
+        b = loop[(i + 1) % len(loop)]
+        for j in range(i + 1, len(loop)):
+            if j == i or j == (i + 1) % len(loop) or i == (j + 1) % len(loop):
+                continue
+            c = loop[j]
+            d = loop[(j + 1) % len(loop)]
+            if _segments_intersect(a, b, c, d):
+                return True
+    return False
+
+
+def _densify_loop_min_segments(loop: list[tuple[float, float]], min_segments: int) -> list[tuple[float, float]]:
+    if len(loop) >= min_segments or len(loop) < 3:
+        return loop
+    result: list[tuple[float, float]] = []
+    missing = min_segments - len(loop)
+    edge_lengths = [
+        math.hypot(loop[(index + 1) % len(loop)][0] - point[0], loop[(index + 1) % len(loop)][1] - point[1])
+        for index, point in enumerate(loop)
+    ]
+    total = sum(edge_lengths) or 1.0
+    extra_by_edge = [0 for _ in loop]
+    for _ in range(missing):
+        index = max(range(len(loop)), key=lambda item: (edge_lengths[item] / total) / (extra_by_edge[item] + 1))
+        extra_by_edge[index] += 1
+    for index, point in enumerate(loop):
+        result.append(point)
+        nxt = loop[(index + 1) % len(loop)]
+        for step in range(1, extra_by_edge[index] + 1):
+            t = step / (extra_by_edge[index] + 1)
+            result.append((point[0] + (nxt[0] - point[0]) * t, point[1] + (nxt[1] - point[1]) * t))
+    return _clean_loop(result)
+
+
 def _rdp_open(points: list[tuple[float, float]], tolerance: float) -> list[tuple[float, float]]:
     if len(points) <= 2:
         return points
@@ -188,6 +257,20 @@ def _turn_angle_degrees(loop: list[tuple[float, float]], index: int) -> float:
     return math.degrees(math.atan2((ax * by) - (ay * bx), (ax * bx) + (ay * by)))
 
 
+def _turn_angle_from_points(
+    previous: tuple[float, float],
+    current: tuple[float, float],
+    nxt: tuple[float, float],
+) -> float:
+    ax = current[0] - previous[0]
+    ay = current[1] - previous[1]
+    bx = nxt[0] - current[0]
+    by = nxt[1] - current[1]
+    if math.hypot(ax, ay) <= _EPS or math.hypot(bx, by) <= _EPS:
+        return 0.0
+    return math.degrees(math.atan2((ax * by) - (ay * bx), (ax * bx) + (ay * by)))
+
+
 def _loop_perimeter(loop: list[tuple[float, float]]) -> float:
     return sum(
         math.hypot(
@@ -196,6 +279,209 @@ def _loop_perimeter(loop: list[tuple[float, float]]) -> float:
         )
         for index, point in enumerate(loop)
     )
+
+
+def _triangle_area(
+    previous: tuple[float, float],
+    current: tuple[float, float],
+    nxt: tuple[float, float],
+) -> float:
+    return abs(
+        ((current[0] - previous[0]) * (nxt[1] - previous[1]))
+        - ((current[1] - previous[1]) * (nxt[0] - previous[0]))
+    ) * 0.5
+
+
+def _edge_bbox_intersects(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> bool:
+    return (
+        max(min(a[0], b[0]), min(c[0], d[0])) <= min(max(a[0], b[0]), max(c[0], d[0])) + _EPS
+        and max(min(a[1], b[1]), min(c[1], d[1])) <= min(max(a[1], b[1]), max(c[1], d[1])) + _EPS
+    )
+
+
+def _topology_safe_feature_indices(
+    loop: list[tuple[float, float]],
+    max_segments: int,
+    angle_threshold: float,
+) -> set[int]:
+    forced = {0}
+    reversal_threshold = _env_float("HALLWAY_HOHQMESH_REVERSAL_TURN_DEGREES", 150.0, 90.0)
+    feature_budget = max(0, min(max_segments - 4, max(4, max_segments // 2)))
+    scored_features = [
+        (abs(_turn_angle_degrees(loop, index)), index)
+        for index in range(len(loop))
+        if angle_threshold <= abs(_turn_angle_degrees(loop, index)) < reversal_threshold
+    ]
+    scored_features.sort(reverse=True)
+    for _score, index in scored_features[:feature_budget]:
+        forced.add(index)
+
+    anchor_budget = max(0, min(max_segments // 8, max_segments - len(forced) - 4))
+    if anchor_budget > 0:
+        stride = max(1, len(loop) // anchor_budget)
+        for index in range(0, len(loop), stride):
+            forced.add(index)
+            if len(forced) >= max_segments - 4:
+                break
+    return forced
+
+
+def _topology_safe_simplify_loop(
+    loop: list[tuple[float, float]],
+    max_segments: int,
+    angle_threshold: float,
+) -> list[tuple[float, float]]:
+    if len(loop) <= max_segments:
+        return loop
+    if len(loop) < 4:
+        return loop
+
+    forced = _topology_safe_feature_indices(loop, max_segments, angle_threshold)
+    n = len(loop)
+    previous_by_index = {index: (index - 1) % n for index in range(n)}
+    next_by_index = {index: (index + 1) % n for index in range(n)}
+    active: set[int] = set(range(n))
+    versions = {index: 0 for index in range(n)}
+    heap: list[tuple[float, int, int]] = []
+
+    def importance(index: int) -> float:
+        if index in forced:
+            return float("inf")
+        previous = previous_by_index[index]
+        nxt = next_by_index[index]
+        area = _triangle_area(loop[previous], loop[index], loop[nxt])
+        turn = abs(_turn_angle_from_points(loop[previous], loop[index], loop[nxt]))
+        reversal_threshold = _env_float("HALLWAY_HOHQMESH_REVERSAL_TURN_DEGREES", 150.0, 90.0)
+        if turn >= reversal_threshold:
+            return area * 0.05
+        return area * (1.0 + (turn / 180.0))
+
+    def push(index: int) -> None:
+        if index in active and index not in forced:
+            heappush(heap, (importance(index), versions[index], index))
+
+    def removal_keeps_simple(index: int) -> bool:
+        if index in forced or len(active) <= 3:
+            return False
+        previous = previous_by_index[index]
+        nxt = next_by_index[index]
+        if previous == nxt:
+            return False
+        a = loop[previous]
+        b = loop[nxt]
+        if math.hypot(b[0] - a[0], b[1] - a[1]) <= _EPS:
+            return False
+        skip = {previous, index, nxt}
+        for edge_start in active:
+            edge_end = next_by_index[edge_start]
+            if edge_start in skip or edge_end in skip:
+                continue
+            c = loop[edge_start]
+            d = loop[edge_end]
+            if _edge_bbox_intersects(a, b, c, d) and _segments_intersect(a, b, c, d):
+                return False
+        return True
+
+    for index in range(n):
+        push(index)
+
+    blocked_rounds = 0
+    while len(active) > max_segments and heap:
+        _score, version, index = heappop(heap)
+        if index not in active or version != versions[index]:
+            continue
+        if not removal_keeps_simple(index):
+            blocked_rounds += 1
+            if blocked_rounds > len(active):
+                break
+            versions[index] += 1
+            continue
+        blocked_rounds = 0
+        previous = previous_by_index[index]
+        nxt = next_by_index[index]
+        active.remove(index)
+        next_by_index[previous] = nxt
+        previous_by_index[nxt] = previous
+        for neighbor in (previous, nxt):
+            versions[neighbor] += 1
+            push(neighbor)
+
+    start = min(active)
+    result: list[tuple[float, float]] = []
+    index = start
+    for _ in range(len(active)):
+        result.append(loop[index])
+        index = next_by_index[index]
+        if index == start:
+            break
+    return _clean_loop(result)
+
+
+def _remove_pathological_reversals(
+    loop: list[tuple[float, float]],
+    *,
+    turn_threshold: float,
+) -> list[tuple[float, float]]:
+    if len(loop) <= 3:
+        return loop
+
+    def removal_keeps_simple(points: list[tuple[float, float]], index: int) -> bool:
+        if len(points) <= 3:
+            return False
+        previous = (index - 1) % len(points)
+        nxt = (index + 1) % len(points)
+        a = points[previous]
+        b = points[nxt]
+        if math.hypot(b[0] - a[0], b[1] - a[1]) <= _EPS:
+            return False
+        skip = {previous, index, nxt}
+        for edge_start, c in enumerate(points):
+            edge_end = (edge_start + 1) % len(points)
+            if edge_start in skip or edge_end in skip:
+                continue
+            d = points[edge_end]
+            if _edge_bbox_intersects(a, b, c, d) and _segments_intersect(a, b, c, d):
+                return False
+        return True
+
+    result = list(loop)
+    max_passes = _env_int("HALLWAY_HOHQMESH_REVERSAL_CLEANUP_PASSES", 6, 0)
+    for _ in range(max_passes):
+        removed = False
+        candidates = sorted(
+            (
+                (
+                    abs(_turn_angle_degrees(result, index)),
+                    min(
+                        math.hypot(result[index][0] - result[(index - 1) % len(result)][0], result[index][1] - result[(index - 1) % len(result)][1]),
+                        math.hypot(result[(index + 1) % len(result)][0] - result[index][0], result[(index + 1) % len(result)][1] - result[index][1]),
+                    ),
+                    index,
+                )
+                for index in range(len(result))
+                if abs(_turn_angle_degrees(result, index)) >= turn_threshold
+            ),
+            reverse=True,
+        )
+        if not candidates:
+            break
+        for _turn, _short_edge, index in candidates:
+            if index >= len(result):
+                continue
+            if abs(_turn_angle_degrees(result, index)) < turn_threshold:
+                continue
+            if removal_keeps_simple(result, index):
+                result.pop(index)
+                removed = True
+                break
+        if not removed:
+            break
+    return _clean_loop(result)
 
 
 def _boundary_profile(loops: list[list[tuple[float, float]]], edge_length: float) -> _BoundaryProfile:
@@ -271,10 +557,18 @@ def _simplify_loop_with_features(
         _env_float("HALLWAY_HOHQMESH_SIMPLIFY_MIN_TOLERANCE", 0.0005, 0.0),
         edge_length * tolerance_ratio,
     )
+    complex_vertex_threshold = _env_int("HALLWAY_HOHQMESH_COMPLEX_LOOP_VERTEX_THRESHOLD", 1500, 1)
+    use_topology_safe = _env_bool(
+        "HALLWAY_HOHQMESH_TOPOLOGY_SAFE_SIMPLIFY",
+        len(loop) >= complex_vertex_threshold,
+    )
+    if use_topology_safe:
+        simplified = _topology_safe_simplify_loop(loop, max_segments, angle_threshold)
+        return simplified if len(simplified) >= 3 else loop
 
     def simplify_at(current_tolerance: float) -> list[tuple[float, float]]:
         forced = {0}
-        max_forced = max(4, max_segments - 2)
+        max_forced = max(4, min(max_segments - 4, max_segments // 2))
         scored_features = [
             (abs(_turn_angle_degrees(loop, index)), index)
             for index in range(len(loop))
@@ -391,22 +685,40 @@ def _repair_simplified_loop_containment(
     if not missed_indices:
         return simplified_loop
     selected = {_nearest_loop_index(raw_loop, point) for point in simplified_loop}
+    preserved = set(selected)
     window = _env_int("HALLWAY_HOHQMESH_CONTAINMENT_REPAIR_VERTEX_WINDOW", 0, 0)
-    max_vertices = _env_int("HALLWAY_HOHQMESH_CONTAINMENT_REPAIR_MAX_VERTICES", 140, 8)
+    protected: set[int] = set()
     for missed_index in missed_indices:
         for offset in range(-window, window + 1):
-            selected.add((missed_index + offset) % len(raw_loop))
-        if len(selected) >= max_vertices:
-            break
+            protected.add((missed_index + offset) % len(raw_loop))
+    selected.update(protected)
+
+    configured_max = _env_int("HALLWAY_HOHQMESH_CONTAINMENT_REPAIR_MAX_VERTICES", 1600, 8)
+    hard_max = _env_int("HALLWAY_HOHQMESH_CONTAINMENT_REPAIR_HARD_MAX_VERTICES", 4096, 8)
+    max_vertices = min(len(raw_loop), max(configured_max, len(preserved) + len(protected)))
+    max_vertices = min(max_vertices, hard_max)
     if len(selected) > max_vertices:
-        locked = sorted(selected)
-        stride = math.ceil(len(locked) / max_vertices)
-        selected = set(locked[::stride])
-        for missed_index in missed_indices:
-            selected.add(missed_index)
-            if len(selected) >= max_vertices:
-                break
+        required = set(protected)
+        if len(required) >= max_vertices:
+            locked = sorted(required)
+            stride = math.ceil(len(locked) / max_vertices)
+            selected = set(locked[::stride])
+        else:
+            budget = max_vertices - len(required)
+            optional = sorted(selected - required)
+            if len(optional) > budget:
+                stride = math.ceil(len(optional) / budget)
+                optional = optional[::stride][:budget]
+            selected = required | set(optional)
     return _clean_loop([raw_loop[index] for index in sorted(selected)])
+
+
+def _containment_miss_limit(raw_loop: list[tuple[float, float]]) -> int:
+    configured = os.environ.get("HALLWAY_HOHQMESH_MAX_CONTAINMENT_MISSES", "").strip()
+    if configured:
+        return _env_int("HALLWAY_HOHQMESH_MAX_CONTAINMENT_MISSES", 0, 0)
+    miss_ratio = _env_float("HALLWAY_HOHQMESH_MAX_CONTAINMENT_MISS_RATIO", 0.0125, 0.0)
+    return max(8, math.ceil(len(raw_loop) * miss_ratio))
 
 
 def _ensure_outer_loop_covers_raw(
@@ -418,10 +730,11 @@ def _ensure_outer_loop_covers_raw(
     tolerance = max(edge_length * 0.04, 0.0008)
     bias_ratio = initial_bias_ratio
     max_bias_ratio = _env_float("HALLWAY_HOHQMESH_CONTAINMENT_MAX_BIAS_RATIO", 1.25, 0.0)
-    repair_loops = _env_int("HALLWAY_HOHQMESH_CONTAINMENT_REPAIR_LOOPS", 1, 0)
+    repair_loops = _env_int("HALLWAY_HOHQMESH_CONTAINMENT_REPAIR_LOOPS", 3, 0)
     base_loop = simplified_loop
     best_loop = _outward_biased_loop(base_loop, edge_length, is_outer=True, bias_ratio_override=bias_ratio)
     best_misses = _coverage_miss_count(raw_loop, best_loop, tolerance)
+    best_bias_ratio = bias_ratio
     while best_misses and bias_ratio < max_bias_ratio:
         bias_ratio = min(max_bias_ratio, max(bias_ratio * 1.6, bias_ratio + 0.04))
         candidate = _outward_biased_loop(base_loop, edge_length, is_outer=True, bias_ratio_override=bias_ratio)
@@ -429,6 +742,7 @@ def _ensure_outer_loop_covers_raw(
         if misses <= best_misses:
             best_loop = candidate
             best_misses = misses
+            best_bias_ratio = bias_ratio
         if misses == 0:
             return best_loop, best_misses
     for _ in range(repair_loops):
@@ -439,11 +753,15 @@ def _ensure_outer_loop_covers_raw(
         if len(repaired) <= len(base_loop):
             break
         base_loop = repaired
-        candidate = _outward_biased_loop(base_loop, edge_length, is_outer=True, bias_ratio_override=bias_ratio)
-        misses = _coverage_miss_count(raw_loop, candidate, tolerance)
-        if misses <= best_misses:
-            best_loop = candidate
-            best_misses = misses
+        for candidate_bias in (best_bias_ratio, min(max_bias_ratio, best_bias_ratio * 1.25), max_bias_ratio):
+            candidate = _outward_biased_loop(base_loop, edge_length, is_outer=True, bias_ratio_override=candidate_bias)
+            misses = _coverage_miss_count(raw_loop, candidate, tolerance)
+            if misses <= best_misses:
+                best_loop = candidate
+                best_misses = misses
+                best_bias_ratio = candidate_bias
+            if misses == 0:
+                return best_loop, best_misses
     return best_loop, best_misses
 
 
@@ -489,8 +807,19 @@ def _prepare_group_loops_for_hohqmesh(
                 is_outer=index == 0,
                 bias_ratio_override=outward_bias_ratio,
             )
+        biased = _densify_loop_min_segments(
+            biased,
+            _env_int("HALLWAY_HOHQMESH_MIN_BOUNDARY_SEGMENTS", 8, 3),
+        )
+        if len(loop) >= _env_int("HALLWAY_HOHQMESH_COMPLEX_LOOP_VERTEX_THRESHOLD", 1500, 1):
+            biased = _remove_pathological_reversals(
+                biased,
+                turn_threshold=_env_float("HALLWAY_HOHQMESH_REVERSAL_TURN_DEGREES", 150.0, 90.0),
+            )
         if len(biased) < 3 or abs(_loop_area(biased)) <= _EPS:
             raise StripRemeshUnsupported("simplified HOHQMesh boundary became degenerate")
+        if _loop_has_self_intersections(biased):
+            raise StripRemeshUnsupported("simplified HOHQMesh boundary self-intersects")
         prepared.append(biased)
     logger.info(
         "HOHQMesh boundary prep -> raw_vertices=%s prepared_vertices=%s max_segments=%s feature_angle=%s tolerance_ratio=%s containment_misses=%s",
@@ -651,16 +980,24 @@ def _build_group_mesh(
     output_path = job_dir / mesh_filename
     timeout = _env_float("HALLWAY_HOHQMESH_TIMEOUT", 30.0, 1.0)
     if profile.is_complex:
-        timeout = _env_float("HALLWAY_HOHQMESH_COMPLEX_TIMEOUT", max(timeout, 60.0), 1.0)
+        timeout = _env_float("HALLWAY_HOHQMESH_COMPLEX_TIMEOUT", max(timeout, 45.0), 1.0)
+    work_loops = loops
+    if profile.is_complex and len(loops) > 1 and _env_bool("HALLWAY_HOHQMESH_COMPLEX_OUTER_BOUNDARY_ONLY", True):
+        work_loops = [loops[0]]
 
     if profile.is_complex:
-        attempts: list[tuple[float | None, float | None, int | None, float | None]] = [
-            (None, None, None, None),
-            (60.0, 0.45, 160, None),
-            (90.0, 0.65, 128, None),
-            (120.0, 0.85, 96, None),
-            (150.0, 1.05, 72, None),
-        ]
+        if len(loops) > 1:
+            attempts: list[tuple[float | None, float | None, int | None, float | None]] = [
+                (145.0, 1.35, 48, 0.0),
+                (120.0, 1.10, 64, 0.0),
+                (95.0, 0.85, 80, 0.0),
+            ]
+        else:
+            attempts = [
+                (100.0, 0.80, 112, 0.0),
+                (120.0, 1.10, 64, 0.0),
+                (145.0, 1.35, 48, 0.0),
+            ]
     else:
         attempts = [
             (None, None, None, None),
@@ -673,19 +1010,35 @@ def _build_group_mesh(
     parsed_mesh: tuple[list[tuple[float, float, float]], list[tuple[int, int, int, int]]] | None = None
     elapsed = 0.0
     for attempt_index, (angle, tolerance_ratio, max_segments, bias_ratio) in enumerate(attempts):
-        prepared_loops = _prepare_group_loops_for_hohqmesh(
-            loops,
-            edge_length,
-            angle_threshold=angle,
-            tolerance_ratio=tolerance_ratio,
-            max_segments=max_segments,
-            outward_bias_ratio=bias_ratio,
-            contain_original=profile.require_containment,
-        )
-        if profile.require_containment and prepared_loops:
+        attempt_edge_length = edge_length
+        attempt_timeout = timeout
+        if profile.is_complex and max_segments is not None:
+            attempt_timeout = min(timeout, max(18.0, 20.0 + (max_segments * 0.11)))
+        try:
+            prepared_loops = _prepare_group_loops_for_hohqmesh(
+                work_loops,
+                attempt_edge_length,
+                angle_threshold=angle,
+                tolerance_ratio=tolerance_ratio,
+                max_segments=max_segments,
+                outward_bias_ratio=bias_ratio,
+                contain_original=profile.require_containment and not profile.is_complex,
+            )
+        except StripRemeshUnsupported as exc:
+            last_error = HOHQMeshError(str(exc))
+            logger.warning(
+                "HOHQMesh attempt %s skipped for %s:%s: %s",
+                attempt_index + 1,
+                source_obj.name,
+                group_index,
+                last_error,
+            )
+            continue
+        if profile.require_containment and not profile.is_complex and prepared_loops:
             containment_tolerance = max(edge_length * 0.04, 0.0008)
-            containment_misses = _coverage_miss_count(_orient_ccw(loops[0]), prepared_loops[0], containment_tolerance)
-            max_misses = _env_int("HALLWAY_HOHQMESH_MAX_CONTAINMENT_MISSES", 0, 0)
+            outer_loop = _orient_ccw(work_loops[0])
+            containment_misses = _coverage_miss_count(outer_loop, prepared_loops[0], containment_tolerance)
+            max_misses = _containment_miss_limit(outer_loop)
             if containment_misses > max_misses:
                 last_error = HOHQMeshError(
                     f"prepared boundary missed {containment_misses} original contour vertices "
@@ -701,14 +1054,14 @@ def _build_group_mesh(
                 continue
         if output_path.exists():
             output_path.unlink()
-        control_path.write_text(_control_text(mesh_filename, edge_length, prepared_loops), encoding="utf-8")
+        control_path.write_text(_control_text(mesh_filename, attempt_edge_length, prepared_loops), encoding="utf-8")
         started = time.monotonic()
         try:
-            result = _run_hohqmesh(job_dir, control_path, timeout)
+            result = _run_hohqmesh(job_dir, control_path, attempt_timeout)
         except subprocess.TimeoutExpired as exc:
             elapsed = time.monotonic() - started
             detail = (exc.stderr or exc.stdout or "").strip()
-            last_error = HOHQMeshError(f"HOHQMesh timed out after {timeout:.1f}s: {detail[-2000:]}")
+            last_error = HOHQMeshError(f"HOHQMesh timed out after {attempt_timeout:.1f}s: {detail[-2000:]}")
             logger.warning("HOHQMesh attempt %s failed for %s:%s: %s", attempt_index + 1, source_obj.name, group_index, last_error)
             if output_path.exists():
                 output_path.unlink()
@@ -784,6 +1137,14 @@ def _combine_meshes(name: str, meshes: list[bpy.types.Mesh]) -> bpy.types.Mesh:
     return combined
 
 
+def _group_net_area(group: list[list[tuple[float, float]]]) -> float:
+    if not group:
+        return 0.0
+    outer_area = abs(_loop_area(group[0]))
+    hole_area = sum(abs(_loop_area(loop)) for loop in group[1:])
+    return max(0.0, outer_area - hole_area)
+
+
 def remesh_object(
     context: bpy.types.Context,
     source_obj: bpy.types.Object,
@@ -812,6 +1173,20 @@ def remesh_object(
         _normalize_domain_loops(group)
         for group in _independent_loop_groups(normalized)
     ]
+    if profile.is_complex:
+        min_group_area = (edge_length * edge_length) * _env_float("HALLWAY_HOHQMESH_MIN_GROUP_AREA_CELLS", 0.5, 0.0)
+        kept_groups = [group for group in groups if _group_net_area(group) >= min_group_area]
+        skipped_groups = len(groups) - len(kept_groups)
+        if skipped_groups:
+            logger.info(
+                "HOHQMesh skipped %s sub-cell independent groups on %s (min_area=%.8f)",
+                skipped_groups,
+                source_obj.name,
+                min_group_area,
+            )
+        groups = kept_groups
+        if not groups:
+            raise StripRemeshUnsupported("all independent contour groups are below HOHQMesh target cell area")
     logger.info(
         "HOHQMesh input %s -> groups=%s loops=%s raw_boundary_vertices=%s max_loop_vertices=%s features=%s reflex=%s complex=%s contain=%s edge_length=%.4f version=%s",
         source_obj.name,

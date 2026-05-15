@@ -185,9 +185,13 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
     mtoon_count = mtoon_materials.configure_avatar_mtoon_materials(parts)
     logger.info("Configured MToon material settings on %s imported layer materials", mtoon_count)
     if state.auto_setup_facial_video:
-        face_video_obj = facial_video_preview.setup_from_state(context, parts=parts, raise_on_missing=False)
-        if face_video_obj is not None:
-            logger.info("Configured facial video preview on %s", face_video_obj.name)
+        try:
+            face_video_obj = facial_video_preview.setup_from_state(context, parts=parts, raise_on_missing=False)
+            if face_video_obj is not None:
+                logger.info("Configured facial video preview on %s", face_video_obj.name)
+        except Exception as exc:
+            logger.exception("Facial video preview setup failed during PSD import")
+            state.last_report = f"Facial video preview failed: {exc}"
 
     state.source_psd_path = filepath
     properties.set_layer_items(scene, parts)
