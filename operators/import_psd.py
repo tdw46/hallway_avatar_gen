@@ -69,7 +69,9 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
     def _facial_video_inputs_required(state) -> bool:
         if not state.auto_setup_facial_video:
             return False
-        return not (state.facial_video_transform_path or "").strip() or not (state.facial_video_path or "").strip()
+        if not (state.facial_video_transform_path or "").strip() or not (state.facial_video_path or "").strip():
+            return True
+        return bool(state.setup_mouth_video_plane) and not (state.mouth_video_path or "").strip()
 
     @staticmethod
     def _show_facial_video_inputs_popup(context: bpy.types.Context) -> None:
@@ -82,7 +84,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
         def draw(self, _context):
             layout = self.layout
             layout.label(text="Facial Video Preview is ON.")
-            layout.label(text="Select Facial config txt and Facial Video FIRST.")
+            layout.label(text="Select Facial config txt and video path(s) FIRST.")
             layout.label(text="The PSD path was saved; import after both are set.")
 
         try:
@@ -299,9 +301,13 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             state.last_report = self._import_report
             logger.info("Configured MToon material settings on %s imported layer materials", mtoon_count)
             if state.auto_setup_facial_video:
-                face_video_obj = facial_video_preview.setup_from_state(context, parts=parts, raise_on_missing=False)
-                if face_video_obj is not None:
-                    logger.info("Configured facial video preview on %s", face_video_obj.name)
+                try:
+                    face_video_obj = facial_video_preview.setup_from_state(context, parts=parts, raise_on_missing=False)
+                    if face_video_obj is not None:
+                        logger.info("Configured facial video preview on %s", face_video_obj.name)
+                except Exception as exc:
+                    logger.exception("Facial video preview setup failed during PSD import")
+                    state.last_report = f"{self._import_report}; facial video preview failed: {exc}"
             if state.auto_rig_on_import and self._imported_objects:
                 self._stage = "rig"
                 self._progress(context, 82, "MToon setup complete; building rig")

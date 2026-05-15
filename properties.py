@@ -122,6 +122,11 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
         description="After import, duplicate the Face layer UVs with the supplied transform txt and replace its material with a movie-backed background material",
         default=True,
     )
+    setup_mouth_video_plane: BoolProperty(
+        name="Mouth Video Plane",
+        description="Create a separate movie-backed mouth plane from the relative mouth bbox in the facial transform txt",
+        default=False,
+    )
     facial_video_transform_path: StringProperty(
         name="Facial UV Transform",
         description="Text file containing [blender_uv_inverse_transform] and [full_frame_pixel_transform] sections",
@@ -129,6 +134,10 @@ class HALLWAYAVATAR_PG_state(PropertyGroup):
     facial_video_path: StringProperty(
         name="Facial Video",
         description="Movie file to use as the Face layer background material texture",
+    )
+    mouth_video_path: StringProperty(
+        name="Mouth Video",
+        description="Movie file to project onto the optional mouth plane",
     )
     facial_video_frame_duration: IntProperty(
         name="Video Frames",

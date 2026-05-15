@@ -40,6 +40,8 @@ class HALLWAYAVATAR_OT_reset_settings_group(Operator):
             state.import_facial_features = False
             state.auto_rig_on_import = True
             state.auto_setup_facial_video = True
+            state.setup_mouth_video_plane = False
+            state.mouth_video_path = ""
             state.facial_video_frame_duration = 1000
             state.facial_video_start_frame = 0
             state.facial_video_frame_offset = 0

@@ -99,6 +99,9 @@ def _draw_import_settings(layout: bpy.types.UILayout, state) -> None:
     _draw_group_title(layout, "Facial Video Preview", icon="FILE_MOVIE")
     _draw_path_picker(layout, state, "facial_video_transform_path", "hallway_avatar.select_facial_video_transform")
     _draw_path_picker(layout, state, "facial_video_path", "hallway_avatar.select_facial_video_file", icon="FILE_MOVIE")
+    _draw_toggle_prop(layout, state, state_path, "setup_mouth_video_plane")
+    if state.setup_mouth_video_plane:
+        _draw_path_picker(layout, state, "mouth_video_path", "hallway_avatar.select_mouth_video_file", icon="FILE_MOVIE")
     layout.prop(state, "facial_video_frame_duration")
     layout.prop(state, "facial_video_start_frame")
     layout.prop(state, "facial_video_frame_offset")
@@ -230,6 +233,9 @@ class HALLWAYAVATAR_PT_main(Panel):
             if state.auto_setup_facial_video:
                 _draw_path_picker(source_panel, state, "facial_video_transform_path", "hallway_avatar.select_facial_video_transform")
                 _draw_path_picker(source_panel, state, "facial_video_path", "hallway_avatar.select_facial_video_file", icon="FILE_MOVIE")
+                _draw_toggle_prop(source_panel, state, state_path, "setup_mouth_video_plane")
+                if state.setup_mouth_video_plane:
+                    _draw_path_picker(source_panel, state, "mouth_video_path", "hallway_avatar.select_mouth_video_file", icon="FILE_MOVIE")
             if state.import_progress_visible or state.import_progress_text:
                 source_panel.separator()
                 _draw_import_progress(source_panel, state)
