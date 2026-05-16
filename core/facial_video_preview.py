@@ -21,7 +21,7 @@ BACKGROUND_MATERIAL_NAME = "HAVATAR_MAT_face_background_video"
 MOUTH_VIDEO_MATERIAL_NAME = "HAVATAR_MAT_mouth_video_plane"
 MOUTH_VIDEO_OBJECT_NAME = "HAVATAR_Mouth_Video_Plane"
 FACE_VIDEO_INSET_RATIO = 0.03
-MOUTH_VIDEO_FRONT_OFFSET_METERS = 0.001
+MOUTH_VIDEO_FRONT_OFFSET_METERS = 0.015
 
 
 @dataclass(frozen=True)
@@ -571,6 +571,25 @@ def _remove_existing_mouth_video_plane() -> None:
         bpy.data.meshes.remove(mesh)
 
 
+def _set_active_visible_object(context: bpy.types.Context, obj: bpy.types.Object) -> None:
+    try:
+        obj.hide_set(False)
+        obj.hide_viewport = False
+        obj.hide_render = False
+        obj.hide_select = False
+        obj.show_name = True
+        obj.show_in_front = True
+        obj.display_type = "TEXTURED"
+    except Exception:
+        pass
+    try:
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+    except Exception:
+        logger.debug("Could not select mouth video plane after creation", exc_info=True)
+
+
 def setup_mouth_video_plane(
     context: bpy.types.Context,
     face_obj: bpy.types.Object,
@@ -597,9 +616,8 @@ def setup_mouth_video_plane(
         (mouth_bbox.right, mouth_bbox.top),
         (mouth_bbox.left, mouth_bbox.top),
     ]
-    inverse_face = face_obj.matrix_world.inverted_safe()
     verts = [
-        tuple(inverse_face @ _target_norm_to_world(face_obj, x_norm, y_norm, y_world=front_y))
+        tuple(_target_norm_to_world(face_obj, x_norm, y_norm, y_world=front_y))
         for x_norm, y_norm in corners_top_left
     ]
     faces = [(0, 1, 2, 3)]
@@ -625,13 +643,9 @@ def setup_mouth_video_plane(
     )
     mesh.materials.append(material)
     plane_obj = bpy.data.objects.new(MOUTH_VIDEO_OBJECT_NAME, mesh)
-    plane_obj.parent = face_obj
-    plane_obj.matrix_parent_inverse.identity()
-    plane_obj.location = (0.0, 0.0, 0.0)
-    plane_obj.rotation_euler = (0.0, 0.0, 0.0)
-    plane_obj.scale = (1.0, 1.0, 1.0)
     plane_obj["hallway_avatar_generated"] = True
     plane_obj["hallway_avatar_mouth_video_plane"] = True
+    plane_obj["hallway_avatar_mouth_video_face_object"] = face_obj.name
     plane_obj["hallway_avatar_mouth_bbox_relative"] = [
         float(mouth_bbox.left),
         float(mouth_bbox.top),
@@ -642,8 +656,19 @@ def setup_mouth_video_plane(
 
     target_collection = face_obj.users_collection[0] if face_obj.users_collection else context.collection
     target_collection.objects.link(plane_obj)
+    _set_active_visible_object(context, plane_obj)
     face_obj["hallway_avatar_mouth_video_plane_object"] = plane_obj.name
-    logger.info("Configured mouth video plane on %s using %s", face_obj.name, material.name)
+    logger.info(
+        "Configured mouth video plane %s on %s in collection %s using %s with bbox=(%.6f, %.6f, %.6f, %.6f)",
+        plane_obj.name,
+        face_obj.name,
+        target_collection.name,
+        material.name,
+        mouth_bbox.left,
+        mouth_bbox.top,
+        mouth_bbox.right,
+        mouth_bbox.bottom,
+    )
     return plane_obj
 
 
