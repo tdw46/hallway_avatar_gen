@@ -13,8 +13,8 @@ logger = get_logger("vrm_integration")
 HALLWAY_SPRING_PREFIX = "Hallway Hair"
 
 SPRING_HIT_RADIUS = 0.02
-SPRING_STIFFNESS = 0.6
-SPRING_DRAG_FORCE = 0.4
+SPRING_STIFFNESS = 0.3
+SPRING_DRAG_FORCE = 0.6
 SPRING_GRAVITY_POWER = 0.01
 SPRING_GRAVITY_DIR = (0.0, 0.0, -1.0)
 
@@ -88,8 +88,8 @@ def assign_vrm1_humanoid_bones(
 
     assignments = {
         "hips": "hips",
-        "spine": "torso",
-        "chest": "spine",
+        "spine": "spine",
+        "chest": "torso",
         "neck": "neck",
         "head": "head",
         "left_upper_arm": "leftArm",

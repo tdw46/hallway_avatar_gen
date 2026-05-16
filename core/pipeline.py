@@ -13,6 +13,8 @@ from . import alpha_mesh_adapter, armature_builder, facial_video_preview, heuris
 logger = get_logger("pipeline")
 ADDON_ID = env.addon_package_id(__package__)
 LAYER_DEPTH_STEP_METERS = 0.0005
+IMPORT_VERTEX_SCALE = 0.211
+IMPORT_TARGET_MIN_Z = 1.31525
 FACIAL_FEATURE_TOKENS = {
     "ears",
     "earwear",
@@ -56,6 +58,22 @@ def _ground_offset_from_parts(parts: list) -> float:
     return sum(offsets) / len(offsets)
 
 
+def _import_scale_from_parts(parts: list) -> float:
+    scales: list[float] = []
+    for part in parts:
+        if part.skipped or not part.imported_object_name:
+            continue
+        obj = bpy.data.objects.get(part.imported_object_name)
+        if obj is None:
+            continue
+        value = float(obj.get("hallway_avatar_import_scale", 1.0))
+        if value > 0.0:
+            scales.append(value)
+    if not scales:
+        return 1.0
+    return sum(scales) / len(scales)
+
+
 def _apply_layer_depth_stack(parts: list, imported_objects: list[bpy.types.Object]) -> None:
     ordered = [(part, obj) for part, obj in zip(parts, imported_objects, strict=False) if obj is not None]
     if not ordered:
@@ -76,6 +94,20 @@ def _apply_layer_depth_stack(parts: list, imported_objects: list[bpy.types.Objec
         )
 
 
+def _imported_mesh_objects_for_parts(parts: list) -> list[bpy.types.Object]:
+    objects: list[bpy.types.Object] = []
+    seen: set[str] = set()
+    for part in parts:
+        if part.skipped or not part.imported_object_name or part.imported_object_name in seen:
+            continue
+        obj = bpy.data.objects.get(part.imported_object_name)
+        if obj is None or obj.type != "MESH":
+            continue
+        seen.add(obj.name)
+        objects.append(obj)
+    return objects
+
+
 def _skip_facial_features_when_disabled(parts: list, import_facial_features: bool) -> None:
     if import_facial_features:
         return
@@ -88,16 +120,41 @@ def _skip_facial_features_when_disabled(parts: list, import_facial_features: boo
         part.skip_reason = "facial feature import disabled"
 
 
-def _lift_imported_meshes_to_ground(imported_objects: list[bpy.types.Object]) -> float:
+def _apply_import_geometry_transform(
+    imported_objects: list[bpy.types.Object],
+    *,
+    import_scale: float = IMPORT_VERTEX_SCALE,
+    target_min_z: float = IMPORT_TARGET_MIN_Z,
+) -> float:
     min_values = [value for value in (_world_min_vertex_z(obj) for obj in imported_objects) if value is not None]
     if not min_values:
         return 0.0
 
-    min_z = min(min_values)
-    z_offset = -min_z
-    logger.info("Ground snap pre-pass -> global minimum world Z = %.6f, requested offset = %.6f", min_z, z_offset)
-    if abs(z_offset) <= 1e-9:
+    scale_value = max(float(import_scale), 1.0e-6)
+    for obj in imported_objects:
+        if obj.type != "MESH" or obj.data is None or not getattr(obj.data, "vertices", None):
+            continue
+        inverse_world = obj.matrix_world.inverted_safe()
+        for vertex in obj.data.vertices:
+            world_co = obj.matrix_world @ vertex.co
+            vertex.co = inverse_world @ (world_co * scale_value)
+        obj.data.update()
+        obj["hallway_avatar_import_scale"] = scale_value
+        obj["hallway_avatar_import_target_min_z"] = float(target_min_z)
+
+    scaled_min_values = [value for value in (_world_min_vertex_z(obj) for obj in imported_objects) if value is not None]
+    if not scaled_min_values:
         return 0.0
+
+    min_z = min(scaled_min_values)
+    z_offset = float(target_min_z) - min_z
+    logger.info(
+        "Import geometry transform -> scale=%.6f pre_lift_min_z=%.6f target_min_z=%.6f requested_offset=%.6f",
+        scale_value,
+        min_z,
+        target_min_z,
+        z_offset,
+    )
 
     for obj in imported_objects:
         before_min_z = _world_min_vertex_z(obj)
@@ -111,9 +168,10 @@ def _lift_imported_meshes_to_ground(imported_objects: list[bpy.types.Object]) ->
         obj.data.update()
         obj["hallway_avatar_ground_offset_z"] = z_offset
         obj["hallway_avatar_ground_min_z_before"] = min_z
+        obj["hallway_avatar_import_final_min_z"] = float(target_min_z)
         after_min_z = _world_min_vertex_z(obj)
         logger.info(
-            "Ground snap %s -> before_min_z=%s after_min_z=%s local_offset=(%.6f, %.6f, %.6f)",
+            "Import geometry transform %s -> before_min_z=%s after_min_z=%s local_offset=(%.6f, %.6f, %.6f)",
             obj.name,
             f"{before_min_z:.6f}" if before_min_z is not None else "None",
             f"{after_min_z:.6f}" if after_min_z is not None else "None",
@@ -122,6 +180,10 @@ def _lift_imported_meshes_to_ground(imported_objects: list[bpy.types.Object]) ->
             local_offset.z,
         )
     return z_offset
+
+
+def _lift_imported_meshes_to_ground(imported_objects: list[bpy.types.Object]) -> float:
+    return _apply_import_geometry_transform(imported_objects)
 
 
 def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
@@ -168,19 +230,26 @@ def import_psd_scene(context: bpy.types.Context, filepath: str) -> list:
 
     _apply_layer_depth_stack([part for part in parts if not part.skipped], imported_objects)
     context.view_layer.update()
-    z_offset = _lift_imported_meshes_to_ground(imported_objects)
-    context.view_layer.update()
-    if abs(z_offset) > 1e-9:
-        logger.info("Translated imported layer mesh data by %.6fm so the lowest world-space vertex rests at Z=0", z_offset)
-        final_min_values = [value for value in (_world_min_vertex_z(obj) for obj in imported_objects) if value is not None]
-        if final_min_values:
-            logger.info("Ground snap post-pass -> global minimum world Z = %.6f", min(final_min_values))
 
     remeshed_count = 0
     if state.qremeshify_settings.auto_on_import and imported_objects:
         remeshed_count = qremeshify.remesh_parts(context, parts, qremeshify.QRemeshifySettings.from_scene_state(state))
         state.remesh_performed = remeshed_count > 0
         logger.info("Auto-remeshed %s imported layer objects", remeshed_count)
+
+    final_imported_objects = _imported_mesh_objects_for_parts(parts)
+    z_offset = _apply_import_geometry_transform(final_imported_objects)
+    context.view_layer.update()
+    if abs(z_offset) > 1e-9:
+        logger.info(
+            "Scaled imported layer mesh data by %.6f and translated by %.6fm so the lowest world-space vertex rests at Z=%.5f",
+            IMPORT_VERTEX_SCALE,
+            z_offset,
+            IMPORT_TARGET_MIN_Z,
+        )
+        final_min_values = [value for value in (_world_min_vertex_z(obj) for obj in final_imported_objects) if value is not None]
+        if final_min_values:
+            logger.info("Import geometry post-pass -> global minimum world Z = %.6f", min(final_min_values))
 
     mtoon_count = mtoon_materials.configure_avatar_mtoon_materials(parts)
     logger.info("Configured MToon material settings on %s imported layer materials", mtoon_count)
@@ -240,6 +309,7 @@ def build_armature_scene(context: bpy.types.Context, *, bind_weights: bool = Fal
         blender_utils.clear_collection(state.rig_collection_name)
 
     ground_offset_z = _ground_offset_from_parts(parts)
+    import_scale = _import_scale_from_parts(parts)
     armature_obj = armature_builder.build_armature(
         context,
         rig_plan,
@@ -247,6 +317,7 @@ def build_armature_scene(context: bpy.types.Context, *, bind_weights: bool = Fal
         edit_bone_offset=(0.0, 0.0, ground_offset_z),
     )
     state.armature_object_name = armature_obj.name
+    armature_obj["hallway_avatar_import_scale"] = import_scale
     humanoid_count, spring_count = vrm_integration.setup_vrm1_avatar(
         context,
         armature_obj,
@@ -262,7 +333,8 @@ def build_armature_scene(context: bpy.types.Context, *, bind_weights: bool = Fal
         weighting.bind_parts(context, armature_obj, parts, rig_plan=rig_plan)
 
     logger.info(
-        "Built rig with edit-bone ground offset %.6f while armature object stayed at world origin",
+        "Built rig with import scale %.6f and edit-bone ground offset %.6f while armature object stayed at world origin",
+        import_scale,
         ground_offset_z,
     )
     state.last_report = f"Built rig with {len(rig_plan.bones)} bones (confidence {rig_plan.confidence:.2f})"

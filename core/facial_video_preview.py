@@ -184,6 +184,10 @@ def find_face_object(context: bpy.types.Context, parts: list[LayerPart] | None =
     return None
 
 
+def _object_import_scale(obj: bpy.types.Object) -> float:
+    return max(float(obj.get("hallway_avatar_import_scale", 1.0) or 1.0), 1.0e-6)
+
+
 def _face_plane_base_uvs(obj: bpy.types.Object, convention: str = "blender_bottom_left_uv") -> list[Vector]:
     world_positions = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices]
     if not world_positions:
@@ -199,7 +203,7 @@ def _face_plane_base_uvs(obj: bpy.types.Object, convention: str = "blender_botto
                 canvas_h = float(part.canvas_size[1])
                 break
     if canvas_w > 0.0 and canvas_h > 0.0:
-        world_scale = 2.0 / max(1.0, canvas_w, canvas_h)
+        world_scale = (2.0 / max(1.0, canvas_w, canvas_h)) * _object_import_scale(obj)
         ground_offset_z = float(obj.get("hallway_avatar_ground_offset_z", 0.0) or 0.0)
         if convention == "blender_bottom_left_square_canvas_uv":
             canvas_square = max(canvas_w, canvas_h, 1.0)
@@ -252,6 +256,45 @@ def _average_uv(uvs: list[Vector | None], vertex_indices: list[int]) -> Vector:
     return total / len(selected)
 
 
+def _ensure_material_double_sided(material: bpy.types.Material | None) -> None:
+    if material is None:
+        return
+    if hasattr(material, "use_backface_culling"):
+        material.use_backface_culling = False
+    if hasattr(material, "show_transparent_back"):
+        material.show_transparent_back = True
+
+    extension = getattr(material, "vrm_addon_extension", None)
+    mtoon1 = getattr(extension, "mtoon1", None)
+    if mtoon1 is None:
+        return
+
+    for owner in (
+        mtoon1,
+        getattr(getattr(mtoon1, "extensions", None), "vrmc_materials_mtoon", None),
+    ):
+        if owner is None:
+            continue
+        for attr in ("double_sided", "double_sided_enabled", "is_double_sided"):
+            if hasattr(owner, attr):
+                try:
+                    setattr(owner, attr, True)
+                except Exception:
+                    pass
+        for attr in ("cull_mode", "cull_mode_enum"):
+            if not hasattr(owner, attr):
+                continue
+            try:
+                current = getattr(owner, attr)
+                identifiers = set(current.identifiers()) if hasattr(current, "identifiers") else set()
+                for candidate in ("OFF", "NONE", "DISABLED", "NO_CULLING"):
+                    if not identifiers or candidate in identifiers:
+                        setattr(owner, attr, candidate)
+                        break
+            except Exception:
+                pass
+
+
 def _inset_face_video_region(
     obj: bpy.types.Object,
     transform: FacialVideoTransform,
@@ -297,6 +340,7 @@ def _inset_face_video_region(
     obj.data = new_mesh
 
     if old_material is not None:
+        _ensure_material_double_sided(old_material)
         obj.data.materials.append(old_material)
     obj.data.materials.append(video_material)
     video_material_index = 1 if old_material is not None else 0
@@ -495,7 +539,7 @@ def _canvas_size_for_face_object(obj: bpy.types.Object) -> tuple[float, float]:
 
 def _target_norm_to_world(obj: bpy.types.Object, x_norm: float, y_top_norm: float, *, y_world: float) -> Vector:
     canvas_w, canvas_h = _canvas_size_for_face_object(obj)
-    world_scale = 2.0 / max(1.0, canvas_w, canvas_h)
+    world_scale = (2.0 / max(1.0, canvas_w, canvas_h)) * _object_import_scale(obj)
     ground_offset_z = float(obj.get("hallway_avatar_ground_offset_z", 0.0) or 0.0)
     return Vector((
         (x_norm * canvas_w - canvas_w * 0.5) * world_scale,

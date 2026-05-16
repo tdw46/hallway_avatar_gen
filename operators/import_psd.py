@@ -243,12 +243,8 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             imported_objects = self._imported_objects or []
             pipeline._apply_layer_depth_stack([part for part in parts if not part.skipped], imported_objects)
             context.view_layer.update()
-            z_offset = pipeline._lift_imported_meshes_to_ground(imported_objects)
-            context.view_layer.update()
-            if abs(z_offset) > 1e-9:
-                logger.info("Modal import ground-snapped layers by %.6fm", z_offset)
             self._stage = "remesh_setup"
-            self._progress(context, 48, "Layer stack and ground snap complete")
+            self._progress(context, 48, "Layer stack complete")
             return False
 
         if self._stage == "remesh_setup":
@@ -267,14 +263,14 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
                 self._stage = "remesh_layers"
                 self._progress(context, 50, f"Preparing quad remesh for {len(self._remesh_candidates)} layers")
             else:
-                self._stage = "mtoon"
+                self._stage = "import_transform"
                 self._progress(context, 72, "Auto remesh skipped")
             return False
 
         if self._stage == "remesh_layers":
             candidates = self._remesh_candidates or []
             if self._remesh_index >= len(candidates):
-                self._stage = "mtoon"
+                self._stage = "import_transform"
                 self._progress(context, 76, f"Quad remeshed {self._remeshed_count} layers")
                 return False
 
@@ -283,6 +279,22 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             self._remesh_index = len(candidates)
             self._progress(context, 76, f"Quad remeshed {self._remeshed_count} layers")
             context.view_layer.update()
+            return False
+
+        if self._stage == "import_transform":
+            parts = self._parts or []
+            imported_objects = pipeline._imported_mesh_objects_for_parts(parts)
+            z_offset = pipeline._apply_import_geometry_transform(imported_objects)
+            context.view_layer.update()
+            if abs(z_offset) > 1e-9:
+                logger.info(
+                    "Modal import scaled layers by %.6f and lifted by %.6fm to Z=%.5f",
+                    pipeline.IMPORT_VERTEX_SCALE,
+                    z_offset,
+                    pipeline.IMPORT_TARGET_MIN_Z,
+                )
+            self._stage = "mtoon"
+            self._progress(context, 78, "Import transform complete")
             return False
 
         if self._stage == "mtoon":

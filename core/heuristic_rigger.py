@@ -28,10 +28,10 @@ def _union_bbox(parts: list[LayerPart], labels: set[str] | None = None) -> tuple
     )
 
 
-def _pixel_to_plane(x: float, y: float, canvas_size: tuple[int, int]) -> tuple[float, float, float]:
+def _pixel_to_plane(x: float, y: float, canvas_size: tuple[int, int], import_scale: float = 1.0) -> tuple[float, float, float]:
     scale = 2.0 / max(1.0, float(max(canvas_size)))
     canvas_w, canvas_h = canvas_size
-    return ((x - canvas_w * 0.5) * scale, 0.0, (canvas_h * 0.5 - y) * scale)
+    return ((x - canvas_w * 0.5) * scale * import_scale, 0.0, (canvas_h * 0.5 - y) * scale * import_scale)
 
 
 def _center_of_bbox(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
@@ -71,9 +71,11 @@ DOWNWARD_BONES = {
     "rightFoot",
     "bothLegs",
 }
-HAIR_SEGMENT_MIN_FACE_RATIO = 1.0 / 2.0
-HAIR_SEGMENT_MAX_FACE_RATIO = 3.0 / 4.0
+HAIR_SEGMENT_MIN_FACE_RATIO = 0.75
+HAIR_SEGMENT_MAX_FACE_RATIO = 1.125
+BACK_HAIR_SEGMENT_DENSITY_MULTIPLIER = 1.5
 DEFAULT_BONE_COLLECTIONS = ("Body", "Face", "Hair", "Arms", "Legs", "Objects")
+SILHOUETTE_SNAP_EPSILON = 1.0e-6
 
 
 def _is_body_upward_bone(name: str) -> bool:
@@ -336,9 +338,9 @@ def _tail_target(
     default_offset = max(12.0, canvas_size[1] * 0.025)
     targets = {
         "root": keypoints.get("hips"),
-        "hips": keypoints.get("torso"),
-        "torso": keypoints.get("spine"),
-        "spine": keypoints.get("neck"),
+        "hips": keypoints.get("spine"),
+        "spine": keypoints.get("torso"),
+        "torso": keypoints.get("neck"),
         "neck": keypoints.get("head"),
         "head": keypoints.get("eyes"),
         "eyes": (x_value, y_value - default_offset),
@@ -417,6 +419,365 @@ def _distance_2d(a: tuple[float, float], b: tuple[float, float]) -> float:
     return hypot(b[0] - a[0], b[1] - a[1])
 
 
+def _bbox_for_tokens(parts: list[LayerPart], tokens: set[str]) -> tuple[float, float, float, float] | None:
+    bboxes = [
+        part.alpha_bbox
+        for part in parts
+        if _canonical_token(part) in tokens
+        and part.alpha_bbox[2] > part.alpha_bbox[0]
+        and part.alpha_bbox[3] > part.alpha_bbox[1]
+    ]
+    if not bboxes:
+        return None
+    return (
+        min(bbox[0] for bbox in bboxes),
+        min(bbox[1] for bbox in bboxes),
+        max(bbox[2] for bbox in bboxes),
+        max(bbox[3] for bbox in bboxes),
+    )
+
+
+def _bbox_center_x(bbox: tuple[float, float, float, float]) -> float:
+    return (bbox[0] + bbox[2]) * 0.5
+
+
+def _apply_bust_body_keypoints(
+    keypoints: dict[str, tuple[float, float]],
+    visible: list[LayerPart],
+    centerline_x: float,
+    canvas_size: tuple[int, int],
+) -> None:
+    canvas_h = float(canvas_size[1])
+    min_gap = max(8.0, canvas_h * 0.015)
+    head_base = keypoints.get("headBase", (centerline_x, canvas_h * 0.34))
+
+    neck_bbox = _bbox_for_tokens(visible, NECK_TOKENS)
+    topwear_bbox = _bbox_for_tokens(visible, {"topwear"})
+
+    body_x = (
+        _bbox_center_x(topwear_bbox)
+        if topwear_bbox is not None
+        else (_bbox_center_x(neck_bbox) if neck_bbox is not None else head_base[0])
+    )
+    neck_bottom_y = neck_bbox[3] if neck_bbox is not None else head_base[1] + canvas_h * 0.08
+    torso_bottom_y = topwear_bbox[3] if topwear_bbox is not None else neck_bottom_y + canvas_h * 0.18
+
+    neck_bottom_y = max(neck_bottom_y, head_base[1] + min_gap)
+    neck_mid_y = head_base[1] + ((neck_bottom_y - head_base[1]) * 0.5)
+    torso_bottom_y = max(torso_bottom_y, neck_bottom_y + min_gap)
+    torso_length = max(torso_bottom_y - neck_mid_y, canvas_h * 0.10)
+    spine_bottom_y = torso_bottom_y + torso_length
+    hips_bottom_y = spine_bottom_y + torso_length
+
+    keypoints["neck"] = (body_x, neck_mid_y)
+    keypoints["torso"] = (body_x, torso_bottom_y)
+    keypoints["spine"] = (body_x, spine_bottom_y)
+    keypoints["hips"] = (body_x, hips_bottom_y)
+    keypoints["pelvis"] = keypoints["hips"]
+    keypoints["waist"] = keypoints["torso"]
+    keypoints["root"] = (body_x, hips_bottom_y + torso_length * 0.5)
+
+
+def _loop_area(loop: list[tuple[float, float]]) -> float:
+    area = 0.0
+    if len(loop) < 3:
+        return area
+    for index, point in enumerate(loop):
+        next_point = loop[(index + 1) % len(loop)]
+        area += (point[0] * next_point[1]) - (next_point[0] * point[1])
+    return area * 0.5
+
+
+def _point_in_loop(point: tuple[float, float], loop: list[tuple[float, float]]) -> bool:
+    if len(loop) < 3:
+        return False
+    px, pz = point
+    inside = False
+    previous = loop[-1]
+    for current in loop:
+        x0, z0 = previous
+        x1, z1 = current
+        crosses = (z0 > pz) != (z1 > pz)
+        if crosses:
+            at_x = x0 + ((pz - z0) * (x1 - x0) / (z1 - z0))
+            if px < at_x:
+                inside = not inside
+        previous = current
+    return inside
+
+
+def _point_in_silhouette(point: tuple[float, float], loops: list[list[tuple[float, float]]]) -> bool:
+    return any(_point_in_loop(point, loop) for loop in loops)
+
+
+def _clean_world_loop(loop: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    cleaned: list[tuple[float, float]] = []
+    for point in loop:
+        if cleaned and abs(cleaned[-1][0] - point[0]) <= SILHOUETTE_SNAP_EPSILON and abs(cleaned[-1][1] - point[1]) <= SILHOUETTE_SNAP_EPSILON:
+            continue
+        cleaned.append(point)
+    if len(cleaned) > 1 and abs(cleaned[0][0] - cleaned[-1][0]) <= SILHOUETTE_SNAP_EPSILON and abs(cleaned[0][1] - cleaned[-1][1]) <= SILHOUETTE_SNAP_EPSILON:
+        cleaned.pop()
+    return cleaned if len(cleaned) >= 3 and abs(_loop_area(cleaned)) > SILHOUETTE_SNAP_EPSILON else []
+
+
+def _world_silhouette_loops(part: LayerPart) -> list[list[tuple[float, float]]]:
+    if not part.imported_object_name:
+        return []
+    obj = bpy.data.objects.get(part.imported_object_name)
+    if obj is None or obj.type != "MESH" or obj.data is None:
+        return []
+
+    edge_counts: dict[tuple[int, int], int] = {}
+    for polygon in obj.data.polygons:
+        vertices = list(polygon.vertices)
+        for index, vertex_index in enumerate(vertices):
+            next_index = vertices[(index + 1) % len(vertices)]
+            edge = (vertex_index, next_index) if vertex_index < next_index else (next_index, vertex_index)
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+
+    adjacency: dict[int, list[int]] = {}
+    for (vertex_a, vertex_b), count in edge_counts.items():
+        if count != 1:
+            continue
+        adjacency.setdefault(vertex_a, []).append(vertex_b)
+        adjacency.setdefault(vertex_b, []).append(vertex_a)
+    if not adjacency:
+        return []
+
+    loops: list[list[tuple[float, float]]] = []
+    visited: set[tuple[int, int]] = set()
+    for start in sorted(adjacency):
+        for second in sorted(adjacency[start]):
+            edge = (start, second) if start < second else (second, start)
+            if edge in visited:
+                continue
+            vertex_loop = [start]
+            previous = start
+            current = second
+            while True:
+                edge = (previous, current) if previous < current else (current, previous)
+                if edge in visited:
+                    break
+                visited.add(edge)
+                vertex_loop.append(current)
+                neighbors = sorted(adjacency.get(current, []))
+                next_candidates = [vertex for vertex in neighbors if vertex != previous]
+                if not next_candidates:
+                    break
+                next_vertex = next_candidates[0]
+                if next_vertex == start:
+                    visited.add((current, next_vertex) if current < next_vertex else (next_vertex, current))
+                    break
+                previous, current = current, next_vertex
+
+            if len(vertex_loop) < 3:
+                continue
+            world_loop = []
+            for vertex_index in vertex_loop:
+                world_co = obj.matrix_world @ obj.data.vertices[vertex_index].co
+                world_loop.append((float(world_co.x), float(world_co.z)))
+            cleaned = _clean_world_loop(world_loop)
+            if cleaned:
+                loops.append(cleaned)
+
+    sorted_loops = sorted(loops, key=lambda loop: abs(_loop_area(loop)), reverse=True)
+    outer_loops: list[list[tuple[float, float]]] = []
+    for loop in sorted_loops:
+        sample = loop[0]
+        if any(_point_in_loop(sample, outer_loop) for outer_loop in outer_loops):
+            continue
+        outer_loops.append(loop)
+    return outer_loops
+
+
+def _import_scale_from_visible_parts(parts: list[LayerPart]) -> float:
+    scales: list[float] = []
+    for part in parts:
+        if part.skipped or not part.imported_object_name:
+            continue
+        obj = bpy.data.objects.get(part.imported_object_name)
+        if obj is None:
+            continue
+        scale = float(obj.get("hallway_avatar_import_scale", 1.0) or 1.0)
+        if scale > 0.0:
+            scales.append(scale)
+    if not scales:
+        return 1.0
+    return sum(scales) / len(scales)
+
+
+def _scanline_intervals(
+    loops: list[list[tuple[float, float]]],
+    fixed_value: float,
+    *,
+    horizontal: bool,
+) -> list[tuple[float, float]]:
+    hits: list[float] = []
+    for loop in loops:
+        for index, start in enumerate(loop):
+            end = loop[(index + 1) % len(loop)]
+            if horizontal:
+                fixed_start, fixed_end = start[1], end[1]
+                varying_start, varying_end = start[0], end[0]
+            else:
+                fixed_start, fixed_end = start[0], end[0]
+                varying_start, varying_end = start[1], end[1]
+
+            delta = fixed_end - fixed_start
+            if abs(delta) <= SILHOUETTE_SNAP_EPSILON:
+                continue
+            low = min(fixed_start, fixed_end)
+            high = max(fixed_start, fixed_end)
+            if not (low <= fixed_value < high):
+                continue
+            t = (fixed_value - fixed_start) / delta
+            hits.append(varying_start + ((varying_end - varying_start) * t))
+
+    hits.sort()
+    unique: list[float] = []
+    for value in hits:
+        if not unique or abs(unique[-1] - value) > 1.0e-5:
+            unique.append(value)
+    if len(unique) % 2 == 1:
+        unique = unique[:-1]
+    return [
+        (unique[index], unique[index + 1])
+        for index in range(0, len(unique), 2)
+        if unique[index + 1] - unique[index] > SILHOUETTE_SNAP_EPSILON
+    ]
+
+
+def _nearest_value_inside_intervals(value: float, intervals: list[tuple[float, float]]) -> float | None:
+    if not intervals:
+        return None
+    best_value: float | None = None
+    best_distance: float | None = None
+    for start, end in intervals:
+        width = end - start
+        inset = min(max(width * 0.30, 1.0e-5), width * 0.45)
+        if start <= value <= end:
+            candidate = (start + end) * 0.5
+        elif value < start:
+            candidate = start + inset
+        else:
+            candidate = end - inset
+        distance = abs(candidate - value)
+        if best_distance is None or distance < best_distance:
+            best_value = candidate
+            best_distance = distance
+    return best_value
+
+
+def _snap_world_point_to_silhouette(
+    point: tuple[float, float],
+    loops: list[list[tuple[float, float]]],
+) -> tuple[float, float]:
+    if not loops or _point_in_silhouette(point, loops):
+        return point
+
+    x_value, z_value = point
+    horizontal_x = _nearest_value_inside_intervals(
+        x_value,
+        _scanline_intervals(loops, z_value, horizontal=True),
+    )
+    if horizontal_x is not None:
+        candidate = (horizontal_x, z_value)
+        if _point_in_silhouette(candidate, loops):
+            return candidate
+
+    vertical_z = _nearest_value_inside_intervals(
+        z_value,
+        _scanline_intervals(loops, x_value, horizontal=False),
+    )
+    if vertical_z is not None:
+        candidate = (x_value, vertical_z)
+        if _point_in_silhouette(candidate, loops):
+            return candidate
+
+    z_values = [point_z for loop in loops for _, point_z in loop]
+    if not z_values:
+        return point
+    min_z = min(z_values)
+    max_z = max(z_values)
+    samples = 32
+    best_candidate: tuple[float, float] | None = None
+    best_distance: float | None = None
+    for sample_index in range(samples + 1):
+        scan_z = min_z + ((max_z - min_z) * (sample_index / max(1, samples)))
+        scan_x = _nearest_value_inside_intervals(
+            x_value,
+            _scanline_intervals(loops, scan_z, horizontal=True),
+        )
+        if scan_x is None:
+            continue
+        candidate = (scan_x, scan_z)
+        if not _point_in_silhouette(candidate, loops):
+            continue
+        distance = hypot(candidate[0] - x_value, candidate[1] - z_value)
+        if best_distance is None or distance < best_distance:
+            best_candidate = candidate
+            best_distance = distance
+    return best_candidate or point
+
+
+def _snap_pixel_to_part_silhouette(
+    point: tuple[float, float],
+    loops: list[list[tuple[float, float]]],
+    canvas_size: tuple[int, int],
+    ground_offset_z: float,
+    import_scale: float,
+    *,
+    desired_x: float | None = None,
+) -> tuple[float, float]:
+    if not loops:
+        return point
+    plane_point = _pixel_to_plane(point[0], point[1], canvas_size, import_scale)
+    desired_plane_x = _pixel_to_plane(desired_x, point[1], canvas_size, import_scale)[0] if desired_x is not None else plane_point[0]
+    world_point = (desired_plane_x, plane_point[2] + ground_offset_z)
+    snapped = _snap_world_point_to_silhouette(world_point, loops)
+    original_world_point = (plane_point[0], plane_point[2] + ground_offset_z)
+    if abs(snapped[0] - original_world_point[0]) <= SILHOUETTE_SNAP_EPSILON and abs(snapped[1] - original_world_point[1]) <= SILHOUETTE_SNAP_EPSILON:
+        return point
+    return _plane_to_pixel(snapped[0], snapped[1] - ground_offset_z, canvas_size, import_scale)
+
+
+def _snap_pixel_chain_to_part_silhouette(
+    points: list[tuple[float, float]],
+    part: LayerPart | None,
+    canvas_size: tuple[int, int],
+    ground_offset_z: float,
+    import_scale: float,
+    *,
+    label: str,
+    desired_x_values: list[float | None] | None = None,
+) -> list[tuple[float, float]]:
+    if part is None:
+        return points
+    loops = _world_silhouette_loops(part)
+    if not loops:
+        return points
+    snapped_points = [
+        _snap_pixel_to_part_silhouette(
+            point,
+            loops,
+            canvas_size,
+            ground_offset_z,
+            import_scale,
+            desired_x=desired_x_values[index] if desired_x_values is not None and index < len(desired_x_values) else None,
+        )
+        for index, point in enumerate(points)
+    ]
+    adjusted = sum(
+        1
+        for original, snapped in zip(points, snapped_points, strict=False)
+        if abs(original[0] - snapped[0]) > 1.0e-4 or abs(original[1] - snapped[1]) > 1.0e-4
+    )
+    if adjusted:
+        logger.info("Snapped %s hair rig points into mesh silhouette -> adjusted=%s/%s", label, adjusted, len(points))
+    return snapped_points
+
+
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     count = len(ordered)
@@ -428,13 +789,14 @@ def _median(values: list[float]) -> float:
     return (ordered[mid - 1] + ordered[mid]) * 0.5
 
 
-def _plane_to_pixel(x: float, z: float, canvas_size: tuple[int, int]) -> tuple[float, float]:
+def _plane_to_pixel(x: float, z: float, canvas_size: tuple[int, int], import_scale: float = 1.0) -> tuple[float, float]:
     scale = 2.0 / max(1.0, float(max(canvas_size)))
+    effective_scale = scale * max(float(import_scale), 1.0e-6)
     canvas_w, canvas_h = canvas_size
-    return ((x / scale) + canvas_w * 0.5, canvas_h * 0.5 - (z / scale))
+    return ((x / effective_scale) + canvas_w * 0.5, canvas_h * 0.5 - (z / effective_scale))
 
 
-def _hair_chain_length(total_length: float, face_bone_length: float) -> int:
+def _hair_chain_length(total_length: float, face_bone_length: float, density_multiplier: float = 1.0) -> int:
     if total_length <= 1e-6:
         return 1
 
@@ -450,10 +812,12 @@ def _hair_chain_length(total_length: float, face_bone_length: float) -> int:
     target_segments = max(1, round(total_length / max(target_segment, 1e-6)))
 
     if min_segments <= max_segments:
-        return max(min_segments, min(target_segments, max_segments))
-    if total_length < min_segment:
-        return 1
-    return min_segments
+        segments = max(min_segments, min(target_segments, max_segments))
+    elif total_length < min_segment:
+        segments = 1
+    else:
+        segments = min_segments
+    return max(1, ceil(segments * max(density_multiplier, 1.0)))
 
 
 def _bone_collection_name(name: str) -> str:
@@ -476,6 +840,7 @@ def _detect_split_front_hair_strands(
     head_mid_world_z: float,
     head_tail_world_z: float,
     ground_offset_z: float = 0.0,
+    import_scale: float = 1.0,
 ) -> tuple[
     tuple[float, float],
     tuple[float, float],
@@ -506,7 +871,7 @@ def _detect_split_front_hair_strands(
         logger.info("Front hair split reject %s -> no world points", part.layer_name or part.layer_path)
         return None
 
-    world_centerline_x = _pixel_to_plane(centerline_x, canvas_size[1] * 0.5, canvas_size)[0]
+    world_centerline_x = _pixel_to_plane(centerline_x, canvas_size[1] * 0.5, canvas_size, import_scale)[0]
     world_x_values = [point[0] for point in world_points]
     world_z_values = [point[1] for point in world_points]
     width = max(world_x_values) - min(world_x_values)
@@ -514,7 +879,7 @@ def _detect_split_front_hair_strands(
         logger.info("Front hair split reject %s -> zero width", part.layer_name or part.layer_path)
         return None
 
-    world_scale = 2.0 / max(1.0, float(max(canvas_size)))
+    world_scale = (2.0 / max(1.0, float(max(canvas_size)))) * max(float(import_scale), 1.0e-6)
     slice_half_width = max(width * 0.10, 6.0 * world_scale)
     left_points = [point for point in world_points if point[0] < world_centerline_x - slice_half_width]
     right_points = [point for point in world_points if point[0] > world_centerline_x + slice_half_width]
@@ -603,8 +968,8 @@ def _detect_split_front_hair_strands(
 
     if part.alpha_bbox[2] > part.alpha_bbox[0] and part.alpha_bbox[3] > part.alpha_bbox[1]:
         _, y0, _, y1 = part.alpha_bbox
-        head_plane_z = _pixel_to_plane(centerline_x, y0 + (y1 - y0) * 0.18, canvas_size)[2]
-        tail_plane_z = _pixel_to_plane(centerline_x, y0 + (y1 - y0) * 0.92, canvas_size)[2]
+        head_plane_z = _pixel_to_plane(centerline_x, y0 + (y1 - y0) * 0.18, canvas_size, import_scale)[2]
+        tail_plane_z = _pixel_to_plane(centerline_x, y0 + (y1 - y0) * 0.92, canvas_size, import_scale)[2]
     else:
         max_world_z = max(world_z_values)
         height = max(max_world_z - min(world_z_values), 1.0e-6)
@@ -627,12 +992,12 @@ def _detect_split_front_hair_strands(
     left_tail = (world_centerline_x - strand_offset, tail_plane_z)
     right_head = (world_centerline_x + strand_offset, head_plane_z)
     right_tail = (world_centerline_x + strand_offset, tail_plane_z)
-    left_root_pixel = _plane_to_pixel(left_root[0], left_root[1], canvas_size)
-    left_head_pixel = _plane_to_pixel(left_head[0], left_head[1], canvas_size)
-    left_tail_pixel = _plane_to_pixel(left_tail[0], left_tail[1], canvas_size)
-    right_root_pixel = _plane_to_pixel(right_root[0], right_root[1], canvas_size)
-    right_head_pixel = _plane_to_pixel(right_head[0], right_head[1], canvas_size)
-    right_tail_pixel = _plane_to_pixel(right_tail[0], right_tail[1], canvas_size)
+    left_root_pixel = _plane_to_pixel(left_root[0], left_root[1], canvas_size, import_scale)
+    left_head_pixel = _plane_to_pixel(left_head[0], left_head[1], canvas_size, import_scale)
+    left_tail_pixel = _plane_to_pixel(left_tail[0], left_tail[1], canvas_size, import_scale)
+    right_root_pixel = _plane_to_pixel(right_root[0], right_root[1], canvas_size, import_scale)
+    right_head_pixel = _plane_to_pixel(right_head[0], right_head[1], canvas_size, import_scale)
+    right_tail_pixel = _plane_to_pixel(right_tail[0], right_tail[1], canvas_size, import_scale)
 
     logger.info(
         "Front hair split accept %s -> center_mass_world_z=%.6f head_tail_world_z=%.6f left_center_world_z=%.6f right_center_world_z=%.6f head_mid_world_z=%.6f strand_offset=%.6f head_plane_z=%.6f tail_plane_z=%.6f left_root_world=(%.6f, %.6f) right_root_world=(%.6f, %.6f) counts(left=%s right=%s center=%s left_strand=%s right_strand=%s left_root=%s right_root=%s)",
@@ -674,7 +1039,9 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
         return RigPlan()
 
     canvas_size = visible[0].canvas_size
+    import_scale = _import_scale_from_visible_parts(visible)
     keypoints, centerline_x = _estimate_keypoints(visible)
+    _apply_bust_body_keypoints(keypoints, visible, centerline_x, canvas_size)
     groups = analyze_groups(visible)
     has_neck = any(_canonical_token(part) in NECK_TOKENS for part in visible)
     has_head = bool(groups["head"]) or any(_canonical_token(part) in HEAD_TOKENS for part in visible)
@@ -754,20 +1121,20 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
     parent_lookup = {
         "root": None,
         "hips": "root",
-        "torso": "hips" if need_group["hips"] else "root",
-        "spine": "torso" if need_group["torso"] else ("hips" if need_group["hips"] else "root"),
-        "neck": "spine" if need_group["spine"] else ("torso" if need_group["torso"] else "root"),
+        "spine": "hips" if need_group["hips"] else "root",
+        "torso": "spine" if need_group["spine"] else ("hips" if need_group["hips"] else "root"),
+        "neck": "torso" if need_group["torso"] else ("spine" if need_group["spine"] else "root"),
         "head": "neck" if need_group["neck"] else ("torso" if need_group["torso"] else "root"),
         "front_hair": "head" if need_group["head"] else ("neck" if need_group["neck"] else "root"),
         "back_hair": "head" if need_group["head"] else ("neck" if need_group["neck"] else "root"),
         "eyes": "head" if need_group["head"] else ("neck" if need_group["neck"] else "root"),
-        "leftArm": "spine" if need_group["spine"] else ("torso" if need_group["torso"] else "root"),
-        "rightArm": "spine" if need_group["spine"] else ("torso" if need_group["torso"] else "root"),
-        "leftElbow": "leftArm" if need_group["leftArm"] else ("spine" if need_group["spine"] else "root"),
-        "rightElbow": "rightArm" if need_group["rightArm"] else ("spine" if need_group["spine"] else "root"),
+        "leftArm": "torso" if need_group["torso"] else ("spine" if need_group["spine"] else "root"),
+        "rightArm": "torso" if need_group["torso"] else ("spine" if need_group["spine"] else "root"),
+        "leftElbow": "leftArm" if need_group["leftArm"] else ("torso" if need_group["torso"] else "root"),
+        "rightElbow": "rightArm" if need_group["rightArm"] else ("torso" if need_group["torso"] else "root"),
         "leftHand": "leftElbow" if need_group["leftElbow"] else ("leftArm" if need_group["leftArm"] else "root"),
         "rightHand": "rightElbow" if need_group["rightElbow"] else ("rightArm" if need_group["rightArm"] else "root"),
-        "bothArms": "spine" if need_group["spine"] else ("torso" if need_group["torso"] else "root"),
+        "bothArms": "torso" if need_group["torso"] else ("spine" if need_group["spine"] else "root"),
         "leftLeg": "hips",
         "rightLeg": "hips",
         "leftKnee": "leftLeg" if need_group["leftLeg"] else "root",
@@ -777,10 +1144,10 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
         "bothLegs": "hips",
     }
     pivot_points = {
-        "root": (keypoints["pelvis"][0], keypoints["pelvis"][1] + canvas_size[1] * 0.08),
-        "hips": keypoints["pelvis"],
-        "torso": keypoints["waist"],
+        "root": keypoints["root"],
+        "hips": keypoints["hips"],
         "spine": keypoints["spine"],
+        "torso": keypoints["torso"],
         "neck": keypoints["neck"],
         "head": keypoints.get("headBase", keypoints["midEye"]),
         "front_hair": front_hair_head,
@@ -806,8 +1173,8 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
     create_order = [
         "root",
         "hips",
-        "torso",
         "spine",
+        "torso",
         "neck",
         "head",
         "eyes",
@@ -848,8 +1215,8 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
             should_deform = deform
         bones[name] = BonePlan(
             name=name,
-            head=_pixel_to_plane(head_xy[0], head_xy[1], canvas_size),
-            tail=_pixel_to_plane(tail_xy[0], tail_xy[1], canvas_size),
+            head=_pixel_to_plane(head_xy[0], head_xy[1], canvas_size, import_scale),
+            tail=_pixel_to_plane(tail_xy[0], tail_xy[1], canvas_size, import_scale),
             parent=parent,
             connected=connected,
             deform=should_deform,
@@ -861,7 +1228,7 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
             continue
         head_xy = pivot_points[bone_name]
         tail_xy = _tail_target(bone_name, pivot_points | keypoints, canvas_size)
-        add_bone(bone_name, head_xy, tail_xy, parent_lookup[bone_name])
+        add_bone(bone_name, head_xy, tail_xy, parent_lookup[bone_name], connected=bone_name in {"hips", "spine", "torso", "neck", "head"})
 
     face_reference_length = _distance_2d(pivot_points["head"], _tail_target("head", pivot_points | keypoints, canvas_size))
     if face_reference_length <= 1e-6:
@@ -877,8 +1244,8 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
             continue
         ground_offset_z = float(visible_obj.get("hallway_avatar_ground_offset_z", 0.0))
         break
-    head_head_plane = _pixel_to_plane(pivot_points["head"][0], pivot_points["head"][1], canvas_size)
-    head_tail_plane = _pixel_to_plane(head_tail_xy[0], head_tail_xy[1], canvas_size)
+    head_head_plane = _pixel_to_plane(pivot_points["head"][0], pivot_points["head"][1], canvas_size, import_scale)
+    head_tail_plane = _pixel_to_plane(head_tail_xy[0], head_tail_xy[1], canvas_size, import_scale)
     head_mid_world_z = ((head_head_plane[2] + head_tail_plane[2]) * 0.5) + ground_offset_z
     head_tail_world_z = head_tail_plane[2] + ground_offset_z
 
@@ -893,6 +1260,7 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
                 head_mid_world_z=head_mid_world_z,
                 head_tail_world_z=head_tail_world_z,
                 ground_offset_z=ground_offset_z,
+                import_scale=import_scale,
             )
 
         if split_layout is not None:
@@ -901,8 +1269,33 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
                 (_distance_2d(left_head, left_tail) + _distance_2d(right_head, right_tail)) * 0.5,
                 face_reference_length,
             )
+            front_segments = max(front_segments, 6)
             left_points = _subdivide_chain(left_head, left_tail, front_segments)
             right_points = _subdivide_chain(right_head, right_tail, front_segments)
+            left_full_chain = _snap_pixel_chain_to_part_silhouette(
+                [left_root] + left_points,
+                split_front_hair,
+                canvas_size,
+                ground_offset_z,
+                import_scale,
+                label="front_hair_left",
+                desired_x_values=[left_head[0]] + [None] * len(left_points),
+            )
+            right_full_chain = _snap_pixel_chain_to_part_silhouette(
+                [right_root] + right_points,
+                split_front_hair,
+                canvas_size,
+                ground_offset_z,
+                import_scale,
+                label="front_hair_right",
+                desired_x_values=[right_head[0]] + [None] * len(right_points),
+            )
+            left_root = left_full_chain[0]
+            right_root = right_full_chain[0]
+            left_points = left_full_chain[1:]
+            right_points = right_full_chain[1:]
+            left_head, left_tail = left_points[0], left_points[-1]
+            right_head, right_tail = right_points[0], right_points[-1]
             names: list[str] = []
             left_top_name = "front_hair_left_top"
             right_top_name = "front_hair_right_top"
@@ -910,14 +1303,14 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
             add_bone(right_top_name, right_root, right_head, "head")
             names.append(left_top_name)
             parent_name = left_top_name
-            for index in range(front_segments):
+            for index in range(len(left_points) - 1):
                 bone_name = f"front_hair_left_{index + 1:02d}"
                 add_bone(bone_name, left_points[index], left_points[index + 1], parent_name, connected=True)
                 names.append(bone_name)
                 parent_name = bone_name
             names.append(right_top_name)
             parent_name = right_top_name
-            for index in range(front_segments):
+            for index in range(len(right_points) - 1):
                 bone_name = f"front_hair_right_{index + 1:02d}"
                 add_bone(bone_name, right_points[index], right_points[index + 1], parent_name, connected=True)
                 names.append(bone_name)
@@ -926,6 +1319,14 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
         else:
             front_segments = _hair_chain_length(_distance_2d(front_hair_head, front_hair_tail), face_reference_length)
             points = _subdivide_chain(front_hair_head, front_hair_tail, front_segments)
+            points = _snap_pixel_chain_to_part_silhouette(
+                points,
+                split_front_hair,
+                canvas_size,
+                ground_offset_z,
+                import_scale,
+                label="front_hair",
+            )
             names: list[str] = []
             parent_name = "head"
             for index in range(front_segments):
@@ -936,8 +1337,21 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
             hair_chain_map["front_hair"] = tuple(names)
 
     if need_group["back_hair"]:
-        back_segments = _hair_chain_length(_distance_2d(back_hair_head, back_hair_tail), face_reference_length)
+        back_hair_part = next((part for part in visible if _canonical_token(part) == "back hair"), None)
+        back_segments = _hair_chain_length(
+            _distance_2d(back_hair_head, back_hair_tail),
+            face_reference_length,
+            BACK_HAIR_SEGMENT_DENSITY_MULTIPLIER,
+        )
         points = _subdivide_chain(back_hair_head, back_hair_tail, back_segments)
+        points = _snap_pixel_chain_to_part_silhouette(
+            points,
+            back_hair_part,
+            canvas_size,
+            ground_offset_z,
+            import_scale,
+            label="back_hair",
+        )
         names: list[str] = []
         parent_name = "head"
         for index in range(back_segments):
@@ -952,8 +1366,8 @@ def estimate_rig(parts: list[LayerPart]) -> RigPlan:
         for part in visible
     }
     layer_auto_weight_bones: dict[str, tuple[str, ...]] = {}
-    body_chain = tuple(name for name in ("root", "hips", "torso", "spine", "neck", "head") if name in bones)
-    neck_chain = tuple(name for name in ("spine", "neck", "head") if name in bones)
+    body_chain = tuple(name for name in ("root", "hips", "spine", "torso", "neck", "head") if name in bones)
+    neck_chain = tuple(name for name in ("torso", "neck", "head") if name in bones)
     for part in visible:
         token = _canonical_token(part)
         if token == "topwear" and body_chain:
