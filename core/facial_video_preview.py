@@ -67,6 +67,8 @@ class FacialVideoTransform:
     uv_inverse: BlenderUvInverseTransform
     full_frame_pixels: FullFramePixelTransform
     mouth_bbox: RelativeMouthBbox | None = None
+    mouth_source_bbox: RelativeMouthBbox | None = None
+    mouth_plane_bbox: RelativeMouthBbox | None = None
 
 
 def _section_values(text: str, section_name: str) -> dict[str, str]:
@@ -108,23 +110,31 @@ def _parse_affine(raw: str | None):
     return (rows[0], rows[1], rows[2])
 
 
+def _parse_relative_bbox(values: dict[str, str], default_coordinate_space: str) -> RelativeMouthBbox | None:
+    if not values:
+        return None
+    bbox = RelativeMouthBbox(
+        left=max(0.0, min(1.0, _float_value(values, "left", 0.0))),
+        top=max(0.0, min(1.0, _float_value(values, "top", 0.0))),
+        right=max(0.0, min(1.0, _float_value(values, "right", 0.0))),
+        bottom=max(0.0, min(1.0, _float_value(values, "bottom", 0.0))),
+        coordinate_space=values.get("coordinate_space", default_coordinate_space).strip() or default_coordinate_space,
+    )
+    return bbox if bbox.is_valid else None
+
+
 def parse_transform_text(text: str) -> FacialVideoTransform:
     uv_values = _section_values(text, "blender_uv_inverse_transform")
     pixel_values = _section_values(text, "full_frame_pixel_transform")
     mouth_values = _section_values(text, "mouth_bbox_relative")
+    mouth_source_values = _section_values(text, "mouth_video_source_bbox_relative")
+    mouth_plane_values = _section_values(text, "mouth_video_plane_relative")
     if not uv_values:
         raise ValueError("Missing [blender_uv_inverse_transform] section")
 
-    mouth_bbox = None
-    if mouth_values:
-        mouth_bbox = RelativeMouthBbox(
-            left=max(0.0, min(1.0, _float_value(mouth_values, "left", 0.0))),
-            top=max(0.0, min(1.0, _float_value(mouth_values, "top", 0.0))),
-            right=max(0.0, min(1.0, _float_value(mouth_values, "right", 0.0))),
-            bottom=max(0.0, min(1.0, _float_value(mouth_values, "bottom", 0.0))),
-            coordinate_space=mouth_values.get("coordinate_space", "target_mascot_image_top_left_normalized").strip()
-            or "target_mascot_image_top_left_normalized",
-        )
+    mouth_bbox = _parse_relative_bbox(mouth_values, "target_mascot_image_top_left_normalized")
+    mouth_source_bbox = _parse_relative_bbox(mouth_source_values, "stabilized_video_top_left_normalized")
+    mouth_plane_bbox = _parse_relative_bbox(mouth_plane_values, "target_mascot_image_top_left_normalized")
 
     return FacialVideoTransform(
         uv_inverse=BlenderUvInverseTransform(
@@ -140,7 +150,9 @@ def parse_transform_text(text: str) -> FacialVideoTransform:
             translate_x_px=_float_value(pixel_values, "translate_x_px", 0.0),
             translate_y_px=_float_value(pixel_values, "translate_y_px", 0.0),
         ),
-        mouth_bbox=mouth_bbox if mouth_bbox is not None and mouth_bbox.is_valid else None,
+        mouth_bbox=mouth_bbox,
+        mouth_source_bbox=mouth_source_bbox,
+        mouth_plane_bbox=mouth_plane_bbox,
     )
 
 
@@ -601,15 +613,15 @@ def setup_mouth_video_plane(
     frame_offset: int,
     auto_refresh: bool,
 ) -> bpy.types.Object | None:
-    mouth_bbox = transform.mouth_bbox
+    mouth_bbox = transform.mouth_plane_bbox or transform.mouth_bbox
     if mouth_bbox is None or not mouth_bbox.is_valid:
-        raise RuntimeError("Facial transform txt does not include a valid [mouth_bbox_relative] section.")
+        raise RuntimeError("Facial transform txt does not include a valid [mouth_video_plane_relative] or [mouth_bbox_relative] section.")
     if not mouth_video_path:
         raise RuntimeError("Mouth video plane is enabled, but no Mouth Video path is selected.")
 
     _remove_existing_mouth_video_plane()
     world_positions = [face_obj.matrix_world @ vertex.co for vertex in face_obj.data.vertices]
-    front_y = (max((co.y for co in world_positions), default=face_obj.matrix_world.translation.y) + MOUTH_VIDEO_FRONT_OFFSET_METERS)
+    front_y = (min((co.y for co in world_positions), default=face_obj.matrix_world.translation.y) - MOUTH_VIDEO_FRONT_OFFSET_METERS)
     corners_top_left = [
         (mouth_bbox.left, mouth_bbox.bottom),
         (mouth_bbox.right, mouth_bbox.bottom),
@@ -626,12 +638,16 @@ def setup_mouth_video_plane(
     mesh.update(calc_edges=True)
 
     uv_layer = mesh.uv_layers.new(name=VIDEO_UV_LAYER_NAME)
+    full_frame_uv_by_vertex = (
+        Vector((0.0, 0.0)),
+        Vector((1.0, 0.0)),
+        Vector((1.0, 1.0)),
+        Vector((0.0, 1.0)),
+    )
     for polygon in mesh.polygons:
         for loop_index in polygon.loop_indices:
             vertex_index = mesh.loops[loop_index].vertex_index
-            x_norm, y_norm = corners_top_left[vertex_index]
-            base_uv = _target_norm_to_base_uv(face_obj, transform, x_norm, y_norm)
-            uv_layer.data[loop_index].uv = transform.uv_inverse.apply(base_uv)
+            uv_layer.data[loop_index].uv = full_frame_uv_by_vertex[vertex_index]
 
     material = _ensure_movie_material(
         mouth_video_path,
@@ -652,6 +668,14 @@ def setup_mouth_video_plane(
         float(mouth_bbox.right),
         float(mouth_bbox.bottom),
     ]
+    if transform.mouth_source_bbox is not None:
+        plane_obj["hallway_avatar_mouth_video_source_bbox_relative"] = [
+            float(transform.mouth_source_bbox.left),
+            float(transform.mouth_source_bbox.top),
+            float(transform.mouth_source_bbox.right),
+            float(transform.mouth_source_bbox.bottom),
+        ]
+    plane_obj["hallway_avatar_mouth_video_uv_mode"] = "full_frame"
     plane_obj["hallway_avatar_mouth_video_path"] = str(Path(bpy.path.abspath(mouth_video_path)))
 
     target_collection = face_obj.users_collection[0] if face_obj.users_collection else context.collection
