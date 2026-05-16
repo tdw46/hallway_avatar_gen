@@ -17,7 +17,14 @@ class HALLWAYAVATAR_OT_setup_facial_video(Operator):
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        context.scene.hallway_avatar_state.last_report = f"Configured facial video preview on {obj.name}"
+        mouth_plane_name = str(obj.get("hallway_avatar_mouth_video_plane_object", "") or "").strip()
+        if context.scene.hallway_avatar_state.setup_mouth_video_plane:
+            if mouth_plane_name:
+                context.scene.hallway_avatar_state.last_report = f"Configured facial video preview on {obj.name}; mouth video plane: {mouth_plane_name}"
+            else:
+                context.scene.hallway_avatar_state.last_report = f"Configured facial video preview on {obj.name}; mouth video plane was not created"
+        else:
+            context.scene.hallway_avatar_state.last_report = f"Configured facial video preview on {obj.name}"
         self.report({"INFO"}, context.scene.hallway_avatar_state.last_report)
         return {"FINISHED"}
 

@@ -58,7 +58,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             return {"CANCELLED"}
         state.source_psd_path = filepath
         if self._facial_video_inputs_required(state):
-            state.last_report = "Select Facial config txt and Facial Video FIRST before importing the PSD Avatar."
+            state.last_report = "Select Facial config txt, Facial Video, and Mouth Video if mouth plane is ON before importing the PSD Avatar."
             self._show_facial_video_inputs_popup(context)
             return {"CANCELLED"}
         if context.window is None:
@@ -85,6 +85,7 @@ class HALLWAYAVATAR_OT_import_psd(Operator, ImportHelper):
             layout = self.layout
             layout.label(text="Facial Video Preview is ON.")
             layout.label(text="Select Facial config txt and video path(s) FIRST.")
+            layout.label(text="If Mouth Video Plane is ON, select a Mouth Video too.")
             layout.label(text="The PSD path was saved; import after both are set.")
 
         try:

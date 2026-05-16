@@ -642,6 +642,7 @@ def setup_mouth_video_plane(
 
     target_collection = face_obj.users_collection[0] if face_obj.users_collection else context.collection
     target_collection.objects.link(plane_obj)
+    face_obj["hallway_avatar_mouth_video_plane_object"] = plane_obj.name
     logger.info("Configured mouth video plane on %s using %s", face_obj.name, material.name)
     return plane_obj
 
@@ -682,6 +683,7 @@ def setup_facial_video_preview(
     obj["hallway_avatar_facial_video_material"] = material.name
     if old_material_name:
         obj["hallway_avatar_facial_video_replaced_material"] = old_material_name
+    obj["hallway_avatar_mouth_video_plane_object"] = ""
     if setup_mouth_plane:
         setup_mouth_video_plane(
             context,
